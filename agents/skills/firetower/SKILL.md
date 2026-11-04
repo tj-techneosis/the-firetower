@@ -1,6 +1,6 @@
 ---
 name: firetower
-description: Put a background watch on the Firetower (`firetower`) — a check that runs on a timer and reports one line (clear, smoke, fire) to a quiet board, instead of a Claude session kept open to poll. Use when asked to "keep an eye on", "watch", "monitor", "check every N minutes whether", "let me know if X breaks", "make sure tonight's deploy goes out", "is the site still up", "tell me when this order goes through", or to see what's being watched ("what's on the board", "is anything on fire", "firetower ls"). The Firetower only shows watches; something else runs them (Crontinental, cron, launchd, systemd, CI). The scheduler owns all timing; the Firetower keeps no clock, and only compares the due time a report gives (`--next`) with now to show "no word". Covers naming a watch, writing the check, `set` vs `run`, `expect`, `--next`/`--until`, booking it with a scheduler, and reading the board.
+description: Put a background watch on the Firetower (`firetower`) — a check that runs on a timer and reports one line (clear, smoke, fire) to a quiet board, instead of a Claude session kept open to poll. Use when asked to "keep an eye on", "watch", "monitor", "check every N minutes whether", "let me know if X breaks", "make sure tonight's deploy goes out", "is the site still up", "tell me when this order goes through", or to see what's being watched ("what's on the board", "is anything on fire", "firetower ls"). The Firetower only shows watches; something else runs them (Crontinental, cron, launchd, systemd, CI). The scheduler owns all timing; the Firetower keeps no clock, and only compares the due time a report gives (`--next`) with now to show "no word". Covers naming a watch, writing the check, `set` vs `run`, `expect`, `--next`/`--until`, tags (`--tag`, grouping, a temporary watch that's tidied away), booking it with a scheduler, and reading the board.
 ---
 
 # Putting a watch on the Firetower
@@ -150,11 +150,29 @@ case $answer in green|yellow|red) ;; *) answer=red ;; esac
 firetower set web/status/page "$answer" "Status page read by an agent." --next 70m
 ```
 
+## Tags
+
+A watch can carry tags, the person's own words: `--tag health` on `set`,
+`run` or `expect` (repeat it or join with commas; `--tag none` clears). Use
+them when the person groups watches by kind rather than by place ("every
+machine's health check"), or when a watch is temporary. Use the words the
+person uses, and reuse tags that exist (`firetower ls` shows them).
+
+The Firetower does nothing with a tag by itself. For a temporary watch that
+should go once it's over, tag it and book the tidy-up too, if it isn't
+booked already (`crontinental list`):
+
+```sh
+firetower run deploy/web/rollout --tag temporary --until 2h -- ./check-rollout.sh   # the booked line
+crontinental every 1h --name tidy-temporary --forever --notify never -- firetower gc --tag temporary
+```
+
 ## Reading the board
 
 ```
 firetower ls                  every lookout: state, id, when it checked, message
-firetower ls --json           the same with every field (label, next_by, until, link…), for a script
+firetower ls --json           the same with every field (label, next_by, until, link, tags…), for a script
+firetower ls --tag health     only what carries a tag
 firetower bar                 one line: "1 fire · 2 smoke · 9 clear"
 firetower board --open        the board, in a window
 firetower seen NAME           acknowledge a smoke or fire (dims until it changes)
@@ -162,6 +180,9 @@ firetower done NAME ["MSG"]   stand a watch down (keeps its last message if none
 firetower rm NAME             take it off the board (a job still booked puts it back:
                               to end a watch, stand it down)
 ```
+
+Another machine's lookout is `source:district/tower/name`, as the board shows
+it; `seen`, `done` and `rm` take that too (no message goes with `done`).
 
 States in `ls` and JSON use plain words: `green` (clear), `yellow` (smoke),
 `red` (fire), `stale` (no word: past its `next_by`), `waiting` (expected,

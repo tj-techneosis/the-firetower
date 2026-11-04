@@ -16,31 +16,46 @@ const usage = `firetower: a lookout for background watches
 Report (what checks run):
   firetower set NAME STATUS ["MESSAGE"] [--district D] [--tower T] [--label L]
                 [--value V] [--next 30m|TIME|none] [--until 6h|TIME|none] [--link X] [--source S]
+                [--tag T]...
   firetower run NAME [the same flags but --value] [--message M] -- CMD ...
-  firetower expect NAME [--next 30m] [--until 6h] [--district D] [--tower T] [--label L] [--link X] [--source S]
+  firetower expect NAME [--next 30m] [--until 6h] [--district D] [--tower T] [--label L] [--link X]
+                [--source S] [--tag T]...
 
 Look after them:
-  firetower ls [--district D] [--tower T] [--all] [--json]
+  firetower ls [--district D] [--tower T] [--tag T]... [--all] [--json]
   firetower seen NAME              acknowledge the current smoke or fire
   firetower done NAME ["MESSAGE"]  stand a watch down (it stays down until expect;
                                    with no MESSAGE it keeps what the watch last said)
-  firetower rm NAME | --district D [--tower T]
-  firetower gc                     forget lookouts stood down over a day ago
+  firetower rm NAME | --district D [--tower T] | --tag T... [--district D] [--tower T]
+  firetower gc [--tag T]...        forget lookouts stood down over a day ago
+                                   (with --tag: every stood-down one carrying it, now)
 
 Boards:
-  firetower board [--port N] [--open] [--ui DIR] | firetower board --url
-  firetower bar [--format plain|json|waybar|swiftbar|xbar] [--template T] [--timeout 8s]
+  firetower board [--port N] [--ui DIR]   the board, here, until Ctrl-C (for a service)
+  firetower board --open | --start | --stop | --url [--once]
+                                   open it in a window (starting it in the background if
+                                   it isn't up), only start it, stop it, or print its address
+                                   (--once: an address good for one browser, for a minute)
+  firetower bar [--format plain|json|waybar|swiftbar|xbar] [--template T] [--tag T]...
+                [--timeout 8s]
   firetower watch --json [--once]  the feed boards read
 
   firetower upgrade [--check] | firetower version | firetower help
 
 STATUS is green, yellow, red or done. A NAME is name, tower/name or
 district/tower/name; the district and the tower default to main (every
-command that takes a NAME also takes --district and --tower). A message
-of more than one word goes in quotes; one that starts with a dash goes
-after --. run's check goes after -- (for pipes or &&: -- sh -c '...'); it
-reports 0 as clear, 1 as smoke, anything else as fire, and exits with the
-check's own code (64 for a mistake in the run line itself).
+command that takes a NAME also takes --district and --tower). Another
+machine's lookout is source:district/tower/name, as the boards show it:
+seen, done and rm reach it through the running board, or its source's act
+command. A message of more than one word goes in quotes; one that starts
+with a dash goes after --. run's check goes after -- (for pipes or &&: -- sh
+-c '...'); it reports 0 as clear, 1 as smoke, anything else as fire, and
+exits with the check's own code (64 for a mistake in the run line itself).
+
+--tag is a word a lookout carries (repeat it, or join words with commas;
+"none" clears them): a board groups by it, and your own scripts act on it
+with ls, rm and gc --tag. To filter, every --tag given must be on the
+lookout. The Firetower does nothing with a tag by itself.
 
 --next is when the next report is due (past it, the board says "no word");
 --until is when the watch ends. Both take a span (30m, 6h, 2w, "5 hours"), a
@@ -50,6 +65,10 @@ counts from when the watch was booked, not from each run. They are the
 scheduler's times, written down: the Firetower keeps no clock, and never
 times, schedules or kills anything. run takes them from $CRONTINENTAL_NEXT
 and $CRONTINENTAL_UNTIL when Crontinental sets them.
+
+bar and seen, done and rm on another machine's lookout ask the running board
+first (the one on board.port, once it proves it's yours), so they don't dial
+every machine themselves.
 
 State lives in ~/.local/state/firetower ($FIRETOWER_DIR); config in
 ~/.config/firetower/config.toml ($FIRETOWER_CONFIG).
@@ -161,12 +180,14 @@ func main() {
 type flags struct {
 	pos  []string
 	vals map[string]string
+	all  map[string][]string // every value a flag was given, for the repeatable ones (--tag)
 	rest []string
 	dash bool
 }
 
-func (f flags) has(k string) bool   { _, ok := f.vals[k]; return ok }
-func (f flags) get(k string) string { return f.vals[k] }
+func (f flags) has(k string) bool      { _, ok := f.vals[k]; return ok }
+func (f flags) get(k string) string    { return f.vals[k] }
+func (f flags) list(k string) []string { return f.all[k] }
 func (f flags) str(k string) *string {
 	if v, ok := f.vals[k]; ok {
 		return &v
@@ -178,7 +199,7 @@ func (f flags) str(k string) *string {
 // spec maps each flag to whether it takes a value. "--" ends the flags when
 // stopAtDash is set, and everything after it is rest.
 func parseFlags(args []string, spec map[string]bool, stopAtDash bool) (flags, error) {
-	f := flags{vals: map[string]string{}}
+	f := flags{vals: map[string]string{}, all: map[string][]string{}}
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" && stopAtDash {
@@ -223,6 +244,7 @@ func parseFlags(args []string, spec map[string]bool, stopAtDash bool) (flags, er
 			return f, fmt.Errorf("--%s is empty: give a time, or none to clear it", k)
 		}
 		f.vals[k] = v
+		f.all[k] = append(f.all[k], v)
 	}
 	return f, nil
 }

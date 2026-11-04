@@ -121,6 +121,9 @@ func (c *Config) lost() *Config {
 // its defaults, each one that is a name.
 func (c *Config) defaultsOnly() *Config {
 	k := &Config{path: c.path}
+	if c.Board.Port > 0 && c.Board.Port <= 65535 {
+		k.Board.Port = c.Board.Port // for --stop, which needs only the port
+	}
 	if c.DefaultDistrict != "" {
 		if checkName("district", c.DefaultDistrict) == nil {
 			k.DefaultDistrict = c.DefaultDistrict

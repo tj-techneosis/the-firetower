@@ -244,6 +244,6 @@ cat <<'MSG'
 
 Next:
   firetower set hello green "The Firetower is up." --next 1d
-  firetower board --open        the board, in a window
+  firetower board --open        the board, in a window (at login: examples/)
   firetower bar                 one line for a menu or status bar (see examples/)
 MSG

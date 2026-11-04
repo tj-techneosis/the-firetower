@@ -101,7 +101,8 @@ Each lookout is one file, `<dir>/<district>/<tower>/<name>.json`, where `<dir>` 
   "until": "2026-11-01T06:00:00Z",
   "seen": null,
   "link": "https://example.com/deploys/123",
-  "source": "crontinental:deploy-landed"
+  "source": "crontinental:deploy-landed",
+  "tags": ["deploys", "health"]
 }
 ```
 
@@ -158,6 +159,15 @@ Each lookout is one file, `<dir>/<district>/<tower>/<name>.json`, where `<dir>` 
   hour, so nobody has to book `gc`.
 - `link` is what a click opens (a URL, a file, or a log). `source` is free text
   shown on hover: who reports.
+- `tags` are words of the person's own (`--tag`, names like every other
+  name, at most 16, kept sorted): a report that gives `--tag` carries exactly
+  those, one that leaves it out keeps them, `--tag none` clears them. They're
+  for grouping across districts, towers and machines (the board's By tag
+  view, `ls`/`bar --tag`) and for a person's own workflow to act on (`ls`,
+  `rm` and `gc --tag`). The Firetower does nothing with a tag by itself:
+  "tear down what's tagged temporary once it's over" is a scheduled `gc
+  --tag temporary` the person books, never a rule inside the tool. The feed
+  carries them, so another machine's lookouts group the same way.
 - The Firetower owns `moved_at`, `last_clear_at`, `status_since` and `seen`
   (when reports landed, never timers);
   checks never write them. A `set` that leaves a flag out keeps that field
@@ -172,17 +182,17 @@ Each lookout is one file, `<dir>/<district>/<tower>/<name>.json`, where `<dir>` 
 
 ```
 firetower set NAME STATUS "MESSAGE" [--district D] [--tower T] [--label L] [--value V]
-              [--next 30m|TIME] [--until 6h|TIME] [--link X] [--source S]
+              [--next 30m|TIME] [--until 6h|TIME] [--link X] [--source S] [--tag T]...
 firetower run NAME [same flags] -- CMD ...
-firetower expect NAME [--next 30m] [--until 6h] [--district D] [--tower T] [--label L]
+firetower expect NAME [--next 30m] [--until 6h] [--district D] [--tower T] [--label L] [--tag T]...
 firetower seen NAME             # acknowledge the current smoke or fire
 firetower done NAME ["MESSAGE"]
-firetower rm NAME | --district D [--tower T]   # a lookout, tower or district
-firetower ls [--district D] [--tower T] [--json]
+firetower rm NAME | --district D [--tower T] | --tag T...   # a lookout, tower, district or tag
+firetower ls [--district D] [--tower T] [--tag T]... [--json]
 firetower watch --json          # the board's feed: a line on every change
-firetower gc                    # clears stood-down lookouts older than a day
-firetower bar [--format plain|json|waybar|swiftbar] [--template T]
-firetower board [--port N] [--open] [--ui DIR] | board --url
+firetower gc [--tag T]...       # clears stood-down lookouts older than a day (tagged: now)
+firetower bar [--format plain|json|waybar|swiftbar] [--template T] [--tag T]...
+firetower board [--port N] [--ui DIR] | board --open | --start | --stop | --url
 firetower upgrade | version
 ```
 
@@ -208,7 +218,9 @@ firetower upgrade | version
   file system would make `Deploy` and `deploy` one file, and nothing can climb
   out of the state dir. A message that starts with dashes goes after `--`.
 - One static binary (Go, like its siblings), with `install.sh`, release
-  archives and `SHA256SUMS`. No daemon: the files are the state.
+  archives and `SHA256SUMS`. The files are the state: no daemon is needed to
+  report or to read. The board, when it runs, is a hub for reading (below),
+  never a second keeper of state.
 
 ### 3. Ways in
 
@@ -248,16 +260,22 @@ giving up the rest.
 
 - **`firetower board`**: a small web board, served on `127.0.0.1` from the
   binary itself. `--open` opens it as an app window (a browser window without
-  tabs or a toolbar) where the browser can, else a normal tab. Districts as
+  tabs or a toolbar) where the browser can, else a normal tab, or with
+  `$FIRETOWER_OPEN_WITH` (a desktop's own launcher). Districts as
   boxes, towers inside, lookouts as rows: a dot, the label, the message (one
   line, truncated) and "checked 4:57 pm · still since 2:10 pm". A tower shows
   its worst status. Click a row to open its `link`; "seen", "stand down" and
-  "remove" do what the CLI does. Nothing ever pops up.
+  "remove" do what the CLI does. Nothing ever pops up. Two more layouts, from
+  the same state: by tag (a lookout under each tag it carries), and "needs a
+  look" (only fire, smoke, no word and out of contact, worst first: the
+  short list for a small window where there's no bar plugin). The address
+  carries the choice (`?view=tag|attention`, `?tag=T`).
   *Your own page instead:* `--ui DIR` (or `ui` in config) serves your files in
   place of the built-in page, with the same small API (below).
 - **`firetower bar`**: one line for any tray or toolbar, printed and done, for
   whatever runs it on a timer: SwiftBar or xbar for a macOS menu-bar icon,
-  Waybar (and so Omarchy), polybar, a tmux status line. A tower glyph, the
+  Waybar, Omarchy's own bar (a plugin in `examples/omarchy`), polybar, a tmux
+  status line. Binoculars (as on the board), the
   count, coloured by the worst status, and a dropdown or tooltip per district.
   `--format` picks the shape; *your own shape instead:* `--template` takes a
   Go template over the same summary `--format json` prints.
@@ -266,9 +284,50 @@ giving up the rest.
 
 **The board's API**, for a custom page: `GET /api/state` (every lookout the
 board shows, as `ls --json` prints them), `GET /api/feed` (the same, as server-sent events),
-`POST /api/seen|done|rm` with `{"id": "district/tower/name"}`, and `GET
-/api/link?id=…` (a lookout's `link` when it is a local file: shown read-only,
-never run).
+`POST /api/seen|done|rm|expect` with `{"id": "district/tower/name"}` (or
+`source:district/tower/name`, which the board routes through that source's
+`act`), and `GET /api/link?id=…` (a lookout's `link` when it is a local
+file: shown read-only, never run).
+
+**The board is the machine's hub.** It already follows every source, holds
+the key and routes actions, so everything else on the machine asks it before
+doing that work itself. `firetower bar` reads `/api/state` over loopback with
+the key (two seconds, then it gives up on it) and only dials the sources
+itself when no board of this person's answers: one that isn't up, one that
+hangs, or another person's on the port, whose key this isn't. "This
+person's" is proved before the key is sent: the client sends a fresh nonce
+to `GET /api/proof` and checks the HMAC the board answers with, so a
+stranger holding the port neither sees the key nor is believed. Once a board
+has proved itself, a failure is reported, never retried another way: a slow
+`act` must not run twice on the other machine. `firetower
+seen|done|rm source:…` posts to the board, or with none runs the source's
+`act` itself, held to the same `hide`. That is what keeps a bar refreshing
+every few seconds from being an ssh login per source per refresh. `board
+--open` and `--start` never tie a board to whoever asked: the one up is
+used, or one is started in the background (its own session, its output
+added to the state dir's `board.log`), and `--stop` asks the proven board
+for its own pid, so it never signals anything on a stale note's word. The
+window `--open` makes gets a one-time address (`?once=`, good once for a
+minute, traded at `POST /api/claim`): a browser's command line is readable
+by everyone on the machine, and the key would be good forever. A poller on
+`/proc` could still claim the address first; the real window then arrives
+with a spent token, and the board answers by making a new key and ending
+every open feed, so the stolen key is worthless within seconds. The proof
+signs the port as well as the nonce (a stranger can't relay the question to
+the person's board on another port), and the key goes over the one
+connection the proof came back on. A running board reads its config once,
+at start.
+
+The waits, and why: a board on loopback answers in milliseconds, so it gets
+half a second to prove itself (one that can't is busy or isn't ours, and
+the bar dials the sources instead, so a stranger that hangs costs a refresh
+half a second), and two seconds for `/api/state`. A background start gets
+five seconds to answer before the command says so (the board may still be
+starting; its output is in `board.log`), and `--stop` five seconds for the
+board to go. None of these times anything the person booked: they're how
+long one command waits on another, and nothing keeps running after. Plain
+`board` stays in the foreground for a service, which is the recommended way
+to run it (`examples/`).
 
 **Who can reach it.** Loopback answers anyone on the machine, so a port alone
 would show a shared machine's other users this person's board and the files
@@ -312,7 +371,8 @@ keep = ["inbox/alice"]   # optional: back in, even if hidden
 
 A source is any command that prints `watch --json`. Without `district`, its
 districts show as they are; with it, its lookouts all go in that district,
-each keeping its own district as a small tag, so nothing is lost. A source
+each keeping its own district in `home_district` (a "district …" chip on
+the board), so nothing is lost. A source
 whose command fails, or whose feed goes quiet past 2 minutes (the feed
 re-sends every 60s), shows "out of contact" on its lookouts instead of
 looking clear, and the board reconnects with a backoff. Both boards read the
@@ -328,12 +388,16 @@ nothing). Patterns are shell globs (`[!x]` negates, as in the shell) against
 names the board would show (a feed's name that isn't one is `unnamed`),
 before any folding. A hidden lookout is dropped as the feed comes in, so it
 reaches nothing: not the board, the bar, the counts, a district's colour,
-the API or the buttons. The same two settings under `[board]` apply to this
+the API or the buttons. The one exception is the machine itself: a source
+out of contact still shows, and counts, as out of contact even with every
+tower of its hidden, since silence must never look clear. The same two settings under `[board]` apply to this
 machine's own lookouts, and the buttons refuse those too. It's what a board
 shows, not who may read what: anyone on that machine can still `firetower
 ls` there. A pattern that could never match a name (a capital, a space, an
 empty side of the `/`) or can't be read is a config error, like a bad port:
-the boards refuse to start, rather than quietly showing everything.
+the boards refuse to start, rather than quietly showing everything. A board
+already running keeps the config it started with, so `seen|done|rm source:…`
+still go through it, and `--stop` (which needs only the port) still stops it.
 
 A broken config never stops a report, and a slip in a board's settings
 never moves one. A file with a bad setting (a port, a pattern, an unknown
@@ -388,6 +452,6 @@ once and `firetower run` passes it on.
 
 A native GUI app or toolkit (the boards are a page and a line of text),
 history graphs, phone or webhook delivery, editing checks from a board, a
-server that collects sources (each board reaches the ones it lists itself),
+server that collects other people's sources (each board reaches the ones it lists itself),
 reports pushed in over the network (a check on the machine reads them and
 reports).

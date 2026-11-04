@@ -13,6 +13,10 @@
 // clock only rewrite the times, in place, so focus, a half-done click or a
 // text selection is never taken away.
 //
+// The address chooses the view (?view=place|tag|attention, and ?tag=T to
+// show only what carries a tag), so a bar, a bookmark or a small window can
+// open straight to one: ?view=attention is the "needs a look" list.
+//
 // Everything a check wrote goes in with textContent, never as HTML.
 "use strict";
 
@@ -39,11 +43,14 @@ let heard = 0;
 const notes = new Map(); // id -> {text, info}: what a button press said, under its row until it changes
 const alerted = new Set(); // notes already read out
 const inflight = new Set(); // ids with a button press on its way
-let armed = null; // the Remove waiting for its second press: its lookout's id
+let armed = null; // the Remove waiting for its second press: its row's key
 let armedAt = 0;
 let armTimer = 0;
 let pendingFocus = null; // where focus goes after an action's redraw
-let openRow = null; // the row whose buttons show on a touch screen
+let openRow = null; // the row whose buttons show on a touch screen (its key)
+const VIEWS = ["place", "tag", "attention"];
+let view = "place"; // how the board is laid out: by district and tower, by tag, or only what needs a look
+let tagFilter = ""; // show only lookouts carrying this tag
 
 const $ = (sel) => document.querySelector(sel);
 function el(tag, cls, text) {
@@ -56,6 +63,16 @@ function announce(text) {
   const a = $("#announce");
   a.textContent = "";
   setTimeout(() => { a.textContent = text; }, 50);
+}
+// done says, on screen too, what a press did: a row it took out of this view
+// (seen in Needs a look, say) is otherwise just gone.
+let doneTimer = 0;
+function done(text) {
+  announce(text);
+  const d = $("#done");
+  d.textContent = text;
+  clearTimeout(doneTimer);
+  doneTimer = setTimeout(() => { d.textContent = ""; }, 8000);
 }
 function setText(node, text) {
   // Only when it changed: some of these are live regions.
@@ -112,6 +129,7 @@ function meta(v, now) {
     case "lost": {
       const src = sourceOf(v);
       parts.push(src && src.since ? `since ${ago(src.since, now)}` : "its machine isn't answering");
+      parts.push("no buttons until it's back");
       if (v.checked_at && !(src && src.since && Math.abs(Date.parse(src.since) - Date.parse(v.checked_at)) < 120e3)) {
         parts.push(`its last report ${ago(v.checked_at, now)}`);
       }
@@ -131,8 +149,8 @@ function meta(v, now) {
       parts.push(v.last_clear_at ? `last clear ${ago(v.last_clear_at, now)}` : "never clear");
       break;
     case "done":
-      word = v.done_by === "until" ? "watch ended" : "stood down";
-      parts.push(clock(v.done_at, now));
+      word = "stood down"; // one word for the state, as everywhere
+      parts.push(v.done_by === "until" ? `its --until passed ${clock(v.done_at, now)}` : clock(v.done_at, now));
       break;
     default:
       parts.push(`checked ${ago(v.checked_at, now)}`);
@@ -153,10 +171,18 @@ function isWeb(link) {
 }
 const isFile = (link) => /^(\/|~\/|file:\/\/)/.test(link || "");
 
+// A row's key: the lookout's id, and in By tag the section too, since a
+// lookout with two tags is drawn twice. Focus, Remove's arming and an open
+// row follow the row; notes and presses follow the lookout.
+const keyOf = (v) => (v._group !== undefined ? `${v.id}\u241f${v._group}` : v.id);
+const rowSel = (k) => `.row[data-key="${CSS.escape(k)}"]`;
+
 function row(v, now) {
   const b = bucket(v);
-  const li = el("li", `row ${b}` + (openRow === v.id ? " open" : ""));
+  const k = keyOf(v);
+  const li = el("li", `row ${b}` + (openRow === k ? " open" : ""));
   li.dataset.id = v.id;
+  li.dataset.key = k;
   li.append(el("span", `dot ${dotClass(v)}`));
   const main = el("div", "main");
   const line = el("div", "line");
@@ -184,9 +210,21 @@ function row(v, now) {
     msg.title = v.message;
     line.append(msg);
   }
-  if (v.tag) {
-    const c = el("span", "chip", `district ${v.tag}`);
+  if (view !== "place") {
+    // Out of its district and tower, a row says where it lives.
+    const c = el("span", "chip", `${v.district}/${v.tower}`);
+    c.title = "its district and tower";
+    line.append(c);
+  }
+  if (v.home_district) {
+    const c = el("span", "chip", `district ${v.home_district}`);
     c.title = `its own district, on ${v.origin}`;
+    line.append(c);
+  }
+  for (const t of v.tags || []) {
+    if (view === "tag" && t === v._group) continue; // the section already says it
+    const c = el("span", "chip tag", `#${t}`);
+    c.title = `tagged ${t}`;
     line.append(c);
   }
   if (v.origin) {
@@ -219,13 +257,13 @@ function row(v, now) {
     const more = el("button", "more", "⋯");
     more.type = "button";
     more.dataset.verb = "more";
-    more.setAttribute("aria-expanded", String(openRow === v.id));
+    more.setAttribute("aria-expanded", String(openRow === k));
     more.setAttribute("aria-label", `Actions for ${v.label}`);
-    more.addEventListener("click", (e) => { e.stopPropagation(); toggleRow(v.id); });
+    more.addEventListener("click", (e) => { e.stopPropagation(); toggleRow(k); });
     li.append(more);
     // On a touch screen a tap on the row works too; with a mouse, a click
     // there is someone selecting text, and is left alone.
-    main.addEventListener("click", (e) => { if (!e.target.closest("a") && touchLayout()) toggleRow(v.id); });
+    main.addEventListener("click", (e) => { if (!e.target.closest("a") && touchLayout()) toggleRow(k); });
   }
   li.append(acts);
   return li;
@@ -239,28 +277,36 @@ function toggleRow(id) {
   pendingFocus = touchLayout() ? { id, verb: "more" } : null;
   build();
   // Opened at the bottom of the window: bring its buttons into view.
-  if (openRow) document.querySelector(`.row[data-id="${CSS.escape(openRow)}"] .acts`)?.scrollIntoView({ block: "nearest" });
+  if (openRow) document.querySelector(`${rowSel(openRow)} .acts`)?.scrollIntoView({ block: "nearest" });
 }
 
 function button(text, verb, v, confirm) {
-  const isArmed = confirm && armed === v.id;
-  const b = el("button", isArmed ? "armed" : null, isArmed ? "Remove?" : text);
+  const k = keyOf(v);
+  const isArmed = confirm && armed === k;
+  const others = view === "tag" ? (v.tags || []).filter((t) => t !== v._group) : [];
+  const b = el("button", isArmed ? "armed" : null, isArmed ? (others.length ? `Remove? (also from ${others.map((t) => "#" + t).join(", ")})` : "Remove?") : text);
   b.type = "button";
   b.dataset.verb = verb;
   b.disabled = inflight.has(v.id);
-  b.setAttribute("aria-label", isArmed ? `Remove? Press again to remove ${v.label}` : `${text}: ${v.label}`);
+  // In By tag a lookout may show under several tags: say Remove takes it from all.
+  const many = view === "tag" && (v.tags || []).length > 1 ? ` (from all ${v.tags.length} of its tags)` : "";
+  b.setAttribute("aria-label", isArmed ? `Remove? Press again to remove ${v.label}${many}` : `${text}: ${v.label}`);
+  if (isArmed && many) b.title = `Removes ${v.label} everywhere it shows${many}`;
   b.addEventListener("click", async (e) => {
     e.stopPropagation();
     // No dialogs: a second press confirms. A double-click or a held Enter
     // is one gesture, not two, so the second press must come a moment later.
-    if (confirm && armed !== v.id) { arm(v); return; }
+    if (confirm && armed !== k) { arm(v); return; }
     if (confirm && Date.now() - armedAt < 500) return;
     clearTimeout(armTimer);
     armed = null;
     // Where focus goes once this row is redrawn, or gone.
-    const rows = [...document.querySelectorAll(".row")].map((r) => r.dataset.id);
-    const i = rows.indexOf(v.id);
-    pendingFocus = verb === "rm" ? { id: rows[i + 1] || rows[i - 1] || "top", verb: "label" } : { id: v.id, verb: "label" };
+    // (Rows of the same lookout under other tags go too, so they're passed over.)
+    const rows = [...document.querySelectorAll(".row")].filter((r) => r.dataset.id !== v.id || r.dataset.key === k);
+    const i = rows.findIndex((r) => r.dataset.key === k);
+    const next = rows.slice(i + 1).find((r) => r.dataset.id !== v.id) || rows.slice(0, i).reverse().find((r) => r.dataset.id !== v.id);
+    pendingFocus = verb === "rm" ? { id: next ? next.dataset.key : "top", verb: "label" } : { id: k, verb: "label" };
+    const sentTo = pendingFocus.id;
     inflight.add(v.id);
     build();
     let ok = false;
@@ -274,7 +320,7 @@ function button(text, verb, v, confirm) {
         const j = await r.json().catch(() => ({}));
         notes.set(v.id, { text: j.error || `${text} didn't work (${r.status})` });
         alerted.delete(v.id);
-        stayNear(v.id);
+        stayNear(k, sentTo);
       } else {
         notes.delete(v.id);
         ok = true;
@@ -282,7 +328,7 @@ function button(text, verb, v, confirm) {
     } catch {
       notes.set(v.id, { text: "The board isn't answering." });
       alerted.delete(v.id);
-      stayNear(v.id);
+      stayNear(k, sentTo);
     }
     inflight.delete(v.id);
     if (ok) {
@@ -291,8 +337,8 @@ function button(text, verb, v, confirm) {
         // Another machine's change shows once it reports: say so on the row too.
         const msg = `Asked ${v.origin}: ${what}. It shows here once ${v.origin} reports.`;
         notes.set(v.id, { text: msg, info: true });
-        announce(`${v.label}: ${msg}`);
-      } else announce(`${v.label} ${what}.`);
+        done(`${v.label}: ${msg}`);
+      } else done(`${v.label} ${what}.`);
     }
     build();
   });
@@ -301,27 +347,32 @@ function button(text, verb, v, confirm) {
 
 // stayNear brings focus back to a row whose press failed, unless the person
 // has since moved on (a slow ssh act can take a while).
-function stayNear(id) {
+function stayNear(k, sentTo) {
   const a = document.activeElement;
-  if (!a || a === document.body || a.closest?.(".row")?.dataset.id === id) pendingFocus = { id, verb: "label" };
+  const at = a?.closest?.(".row")?.dataset.key;
+  // Back on the row that failed, unless the person has moved on: focus still
+  // there, nowhere, or where the press itself sent it (Remove's next row).
+  const moved = at === sentTo || (sentTo === "top" && a === $("h1"));
+  if (!a || a === document.body || at === k || moved) pendingFocus = { id: k, verb: "label" };
 }
 
 function arm(v) {
   clearTimeout(armTimer);
-  armed = v.id;
+  const k = keyOf(v);
+  armed = k;
   armedAt = Date.now();
-  pendingFocus = { id: v.id, verb: "rm" };
+  pendingFocus = { id: k, verb: "rm" };
   announce(`Press Remove again to remove ${v.label}. Escape cancels.`);
   build();
-  armTimer = setTimeout(() => { if (armed === v.id) { quietDisarm(); announce("Remove cancelled."); } }, ARM_FOR);
+  armTimer = setTimeout(() => { if (armed === k) { quietDisarm(); announce("Remove cancelled."); } }, ARM_FOR);
 }
 // quietDisarm puts the armed button back in place, without a rebuild, so
 // whatever was just clicked or focused stays where it is.
 function quietDisarm() {
   clearTimeout(armTimer);
   if (armed === null) return;
-  const b = document.querySelector(`.row[data-id="${CSS.escape(armed)}"] button.armed`);
-  const label = document.querySelector(`.row[data-id="${CSS.escape(armed)}"] .label`)?.textContent || "";
+  const b = document.querySelector(`${rowSel(armed)} button.armed`);
+  const label = document.querySelector(`${rowSel(armed)} .label`)?.textContent || "";
   armed = null;
   if (b) {
     b.classList.remove("armed");
@@ -335,11 +386,14 @@ document.addEventListener("keydown", (e) => {
   if (openRow !== null) { const id = openRow; openRow = null; pendingFocus = touchLayout() ? { id, verb: "more" } : null; build(); }
 });
 document.addEventListener("focusin", (e) => {
-  if (armed !== null && e.target.closest?.(".row")?.dataset.id !== armed) { quietDisarm(); announce("Remove cancelled."); }
+  if (armed !== null && e.target.closest?.(".row")?.dataset.key !== armed) { quietDisarm(); announce("Remove cancelled."); }
 });
 document.addEventListener("click", (e) => {
   // A tap outside an open row closes it.
-  if (openRow !== null && !e.target.closest?.(".row")) { openRow = null; build(); }
+  if (openRow !== null && !e.target.closest?.(".row")) {
+    if (armed !== null) { quietDisarm(); announce("Remove cancelled."); } // a closed row keeps nothing armed
+    openRow = null; build();
+  }
 });
 
 function group(lookouts) {
@@ -353,10 +407,151 @@ function group(lookouts) {
   return districts;
 }
 
+// needsLook: what the "needs a look" view keeps, the same lookouts the
+// summary counts as needing one.
+const needsLook = (v) => ["red", "yellow", "stale", "lost"].includes(bucket(v));
+
+function allTags(lookouts) {
+  const tags = new Set();
+  for (const v of lookouts) for (const t of v.tags || []) tags.add(t);
+  return [...tags].sort();
+}
+
+// A tag as typed in an address: "#Payments" is the tag payments.
+const asTag = (t) => (t || "").trim().replace(/^#+/, "").toLowerCase();
+
+// fromAddress reads the view from the address, and puts a wrong one right
+// (?view=nonsense is the board by place, and says so).
+function fromAddress() {
+  const params = new URL(location.href).searchParams;
+  view = VIEWS.includes(params.get("view")) ? params.get("view") : "place";
+  tagFilter = asTag(params.get("tag"));
+  writeAddress(false);
+}
+
+// writeAddress puts the view in the address (never the key): a new history
+// entry when the person changed it, so Back steps back through views.
+function writeAddress(push) {
+  const url = new URL(location.href);
+  for (const k of ["key", "once"]) url.searchParams.delete(k);
+  if (view === "place") url.searchParams.delete("view"); else url.searchParams.set("view", view);
+  if (tagFilter) url.searchParams.set("tag", tagFilter); else url.searchParams.delete("tag");
+  const next = url.pathname + url.search + url.hash;
+  if (next === location.pathname + location.search + location.hash) return;
+  if (push) history.pushState(null, "", next); else history.replaceState(null, "", next);
+}
+
+// setView changes the layout, and the address with it.
+function setView(next, tag) {
+  view = VIEWS.includes(next) ? next : "place";
+  tagFilter = tag ?? tagFilter;
+  writeAddress(true);
+  openRow = null;
+  build();
+}
+addEventListener("popstate", () => { fromAddress(); openRow = null; build(); });
+
+// controls keeps the view buttons and the tag list in step with the
+// lookouts, changing only what changed, so focus on them stays put.
+function controls(tags) {
+  for (const b of document.querySelectorAll("#views [data-view]")) {
+    b.setAttribute("aria-pressed", String(b.dataset.view === view));
+    if (b.dataset.view === "tag") b.hidden = tags.length === 0 && view !== "tag";
+  }
+  const pick = $("#tagpick");
+  pick.closest("label").hidden = tags.length === 0 && !tagFilter;
+  const want = ["", ...new Set([...tags, ...(tagFilter ? [tagFilter] : [])])];
+  const have = [...pick.options].map((o) => o.value);
+  if (want.join("\n") !== have.join("\n")) {
+    pick.replaceChildren(...want.map((t) => { const o = el("option", null, t ? `#${t}` : "every tag"); o.value = t; return o; }));
+  }
+  pick.value = tagFilter;
+}
+
+// shownNote says what a filtered board is showing, beside the summary,
+// which is always the whole board's.
+function shownNote(list) {
+  const note = $("#shown");
+  if (!tagFilter) { setText(note, ""); return; }
+  const live = (vs) => vs.filter((v) => v.state !== "done").length;
+  const n = live(list);
+  setText(note, n || list.length
+    ? `Only #${tagFilter}: ${n} of the ${live(state.lookouts)} lookouts on watch carry it. The summary above is the whole board.`
+    : `No lookout carries #${tagFilter}. The summary above is the whole board.`);
+}
+
 function worst(vs) {
   let w = null;
   for (const v of vs) if (!w || rank(v) > rank(w)) w = v;
   return w ? dotClass(w) : "none";
+}
+
+// buildPlaces is the board by district and tower.
+function buildPlaces(board, list, now) {
+  const districts = group(list);
+  const solo = districts.size <= 1;
+  for (const [name, towers] of districts) {
+    const sec = el("section", "district" + (solo ? " solo" : ""));
+    if (!solo) {
+      const h = el("h2");
+      h.append(el("span", "dot " + worst([...towers.values()].flat())), name);
+      sec.append(h);
+    }
+    for (const [tname, vs] of towers) sec.append(tower(tname, vs, now, solo ? "h2" : "h3"));
+    board.append(sec);
+  }
+}
+
+// buildTags is the board by tag: a lookout shows under each tag it carries,
+// whatever its district or machine, and one with none under "no tag".
+function buildTags(board, list, now) {
+  const byTag = new Map();
+  for (const v of list) {
+    const ts = (v.tags || []).filter((t) => !tagFilter || t === tagFilter);
+    for (const t of ts.length ? ts : [""]) {
+      if (!byTag.has(t)) byTag.set(t, []);
+      byTag.get(t).push({ ...v, _group: t });
+    }
+  }
+  const names = [...byTag.keys()].sort((a, b) => (a === "") - (b === "") || a.localeCompare(b));
+  for (const t of names) {
+    const sec = el("section", "district solo");
+    sec.append(tower(t ? `#${t}` : "no tag", byRank(byTag.get(t)), now, "h2"));
+    board.append(sec);
+  }
+}
+
+// buildAttention is only what needs a look, worst first, in one list.
+function buildAttention(board, list, now) {
+  const vs = byRank(list.filter(needsLook));
+  if (!vs.length) return;
+  const sec = el("section", "district solo attention");
+  // Its count is its rows. The summary's also counts each machine out of
+  // contact once, and a machine with no lookouts has a banner, not a row.
+  // A machine out of contact with no lookouts here has a banner, not a row;
+  // the summary counts it, so the count says it too.
+  const shown = new Set(vs.map((v) => v.origin).filter(Boolean));
+  const bare = tagFilter ? 0 : state.sources.filter((x) => x.contact === "lost" && !shown.has(x.name)).length;
+  let count = `${vs.length} lookout${vs.length === 1 ? "" : "s"}`;
+  if (bare) count += ` · and ${bare} machine${bare === 1 ? "" : "s"} out of contact with none, above`;
+  const t = tower("Needs a look", vs, now, "h2", count);
+  sec.append(t);
+  board.append(sec);
+}
+
+const byRank = (vs) => [...vs].sort((a, b) => rank(b) - rank(a) || a.id.localeCompare(b.id));
+
+function tower(name, vs, now, tag, count) {
+  const t = el("div", "tower");
+  const h = el(tag, "tower-name");
+  const live = vs.filter((v) => v.state !== "done").length;
+  h.append(el("span", "dot " + worst(vs)), el("span", "name", name), el("span", "count", count || `${live} on watch`));
+  const ul = el("ul", "rows");
+  // Stood-down lookouts sink to the bottom.
+  const sorted = [...vs].sort((a, b) => (a.state === "done") - (b.state === "done"));
+  for (const v of sorted) ul.append(row(v, now));
+  t.append(h, ul);
+  return t;
 }
 
 // build draws the whole board from state. Only a change in what it shows
@@ -367,42 +562,45 @@ function build() {
   const board = $("#board");
   const active = document.activeElement;
   const activeRow = active?.closest?.(".row");
-  const focus = pendingFocus || (activeRow ? { id: activeRow.dataset.id, verb: active.dataset?.verb || "label" } : null);
+  const focus = pendingFocus || (activeRow ? { id: activeRow.dataset.key, verb: active.dataset?.verb || "label" } : null);
   pendingFocus = null;
+  // Where the focused row was, for when it's gone from this view (seen in
+  // Needs a look, say): the row that takes its place gets focus.
+  const before = [...board.querySelectorAll(".row")].map((r) => r.dataset.key);
+  const was = focus && focus.id !== "top" ? before.indexOf(focus.id) : -1;
   board.replaceChildren();
 
-  const districts = group(state.lookouts);
-  const solo = districts.size <= 1;
-  for (const [name, towers] of districts) {
-    const sec = el("section", "district" + (solo ? " solo" : ""));
-    if (!solo) {
-      const h = el("h2");
-      h.append(el("span", "dot " + worst([...towers.values()].flat())), name);
-      sec.append(h);
+  const tags = allTags(state.lookouts);
+  controls(tags);
+  const list = tagFilter ? state.lookouts.filter((v) => (v.tags || []).includes(tagFilter)) : state.lookouts;
+  shownNote(list);
+  if (view === "attention") buildAttention(board, list, now);
+  else if (view === "tag") buildTags(board, list, now);
+  else buildPlaces(board, list, now);
+  if (!board.childElementCount) {
+    if (state.lookouts.length === 0) board.append($("#empty").content.cloneNode(true));
+    else {
+      const msg = el("section", "empty");
+      const noneTagged = tagFilter && list.length === 0;
+      msg.append(el("h2", null, noneTagged ? `No lookout carries #${tagFilter}` : "Nothing needs a look"));
+      msg.append(el("p", null, noneTagged ? "Pick another tag, or every tag."
+        : tagFilter ? `Every lookout carrying #${tagFilter} is clear, waiting, seen or stood down.`
+        : "Every lookout is clear, waiting, seen or stood down." + (state.sources.some((x) => x.contact === "lost") ? " A machine out of contact is above." : "")));
+      board.append(msg);
     }
-    for (const [tname, vs] of towers) {
-      const t = el("div", "tower");
-      const h = el(solo ? "h2" : "h3", "tower-name");
-      const live = vs.filter((v) => v.state !== "done").length;
-      h.append(el("span", "dot " + worst(vs)), tname, el("span", "count", `${live} on watch`));
-      const ul = el("ul", "rows");
-      // Stood-down lookouts sink to the bottom of their tower.
-      const sorted = [...vs].sort((a, b) => (a.state === "done") - (b.state === "done"));
-      for (const v of sorted) ul.append(row(v, now));
-      t.append(h, ul);
-      sec.append(t);
-    }
-    board.append(sec);
   }
-  if (districts.size === 0) board.append($("#empty").content.cloneNode(true));
   times();
 
   if (focus && focus.id === "top") $("h1").focus();
   else if (focus && focus.id) {
     // Back to the same kind of thing: never from a name onto an action.
-    const sel = `.row[data-id="${CSS.escape(focus.id)}"]`;
-    const target = (focus.verb === "label" ? board.querySelector(`${sel} .label`)
+    const sel = rowSel(focus.id);
+    let target = (focus.verb === "label" ? board.querySelector(`${sel} .label`)
       : board.querySelector(`${sel} button[data-verb="${focus.verb}"]`)) || board.querySelector(`${sel} .label`);
+    if (!target && was >= 0) {
+      const rows = board.querySelectorAll(".row .label");
+      target = rows[Math.min(was, rows.length - 1)] || $("#views [aria-pressed=\"true\"]");
+    }
     target?.focus();
   }
 }
@@ -475,22 +673,25 @@ let lastIcon = "";
 function setIcon(color) {
   if (color === lastIcon) return;
   lastIcon = color;
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 2 7 7h2l-2 15h3l1-6h2l1 6h3L15 7h2z" fill="none" stroke="#8c959f" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="5.4" r="2.4" fill="${color}"/></svg>`;
+  // Binoculars, as in the bars; the lenses carry the worst state's colour.
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3.2 15 5.1 6.2A1.8 1.8 0 0 1 6.9 4.8h1.4A1.7 1.7 0 0 1 10 6.5V12M20.8 15l-1.9-8.8a1.8 1.8 0 0 0-1.8-1.4h-1.4A1.7 1.7 0 0 0 14 6.5V12M10 8.5h4M10 12h4" fill="none" stroke="#8c959f" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6.5" cy="15.5" r="3.6" fill="${color}" stroke="#8c959f" stroke-width="1.8"/><circle cx="17.5" cy="15.5" r="3.6" fill="${color}" stroke="#8c959f" stroke-width="1.8"/></svg>`;
   $("#icon").href = "data:image/svg+xml," + encodeURIComponent(svg);
 }
 
 function needKey(wrong) {
   blocked = true;
+  $("#views").hidden = true;
   state = null;
   armed = null;
   openRow = null;
   clearTimeout(armTimer);
   $("#banners").replaceChildren();
-  setText($("#summary"), wrong ? "Wrong key" : "No key");
+  setText($("#summary"), claimTrouble ? "That address is spent" : wrong ? "Wrong key" : "No key");
   setText($("#updated"), "");
   const msg = el("section", "empty");
   msg.append(el("h2", null, wrong ? "This board didn't accept that key" : "This board opens with its key"));
-  if (wrong) msg.append(el("p", null, "The key in the address (or the one this browser saved) isn't this board's: it may be from another board, or an old one."));
+  if (claimTrouble) msg.append(el("p", null, claimTrouble));
+  else if (wrong) msg.append(el("p", null, "The key in the address (or the one this browser saved) isn't this board's: it may be from another board, or an old one."));
   const p = el("p", null, "Open it with ");
   p.append(el("code", null, "firetower board --open"), ", or ", el("code", null, "firetower board --url"), " for the address, then reload.");
   msg.append(p);
@@ -512,12 +713,24 @@ async function accepted(k) {
 
 // The key: one from the address is tried first and saved only once the
 // board has taken it; a wrong one never replaces a saved one that works.
+let claimTrouble = ""; // why a one-time address didn't let this page in
 async function chooseKey() {
   const url = new URL(location.href);
-  const given = url.searchParams.get("key") || "";
-  if (url.searchParams.has("key")) {
+  let given = url.searchParams.get("key") || "";
+  const once = url.searchParams.get("once") || "";
+  if (url.searchParams.has("key") || url.searchParams.has("once")) {
     url.searchParams.delete("key");
+    url.searchParams.delete("once");
     history.replaceState(null, "", url.pathname + url.search + url.hash);
+  }
+  // A one-time address (board --open) is traded for the key, once.
+  if (once && !given) {
+    try {
+      const r = await fetch("/api/claim", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ once }) });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) given = j.key || "";
+      else claimTrouble = j.error || "This address was for one use, and it's spent.";
+    } catch {}
   }
   let saved = "";
   try { saved = localStorage.getItem(STORE) || ""; } catch { storageOK = false; }
@@ -550,12 +763,12 @@ function connect() {
     for (const v of next.lookouts) {
       if (before.has(v.id) && before.get(v.id) !== JSON.stringify(v)) {
         notes.delete(v.id); alerted.delete(v.id);
-        if (armed === v.id) quietDisarm(); // never confirm a Remove on a row that just changed
+        if (armed !== null && armed.split("\u241f")[0] === v.id) quietDisarm(); // never confirm a Remove on a row that just changed
       }
     }
     for (const [id, n] of notes) if (n.text === "The board isn't answering.") notes.delete(id);
     const notesChanged = notes.size !== notesBefore;
-    if (openRow && !next.lookouts.some((v) => v.id === openRow)) openRow = null;
+    if (openRow && !next.lookouts.some((v) => v.id === openRow.split("\u241f")[0])) openRow = null;
     const was = connected;
     state = next;
     connected = true;
@@ -584,7 +797,10 @@ function connect() {
 }
 
 async function start() {
+  for (const b of document.querySelectorAll("#views [data-view]")) b.addEventListener("click", () => setView(b.dataset.view));
+  $("#tagpick").addEventListener("change", (e) => setView(view, e.target.value));
   const { key, wrong } = await chooseKey();
+  fromAddress(); // only now: the address carried the key, or a one-time token, for chooseKey
   KEY = key;
   if (!KEY) return needKey(wrong);
   connect();

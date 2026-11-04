@@ -35,12 +35,13 @@ type View struct {
 	DoneBy      string     `json:"done_by,omitempty"` // "report" (done, Stand down) or "until" (its end passed)
 	Link        string     `json:"link,omitempty"`
 	Source      string     `json:"source,omitempty"`
+	Tags        tagList    `json:"tags,omitempty"`
 	Broken      bool       `json:"broken,omitempty"`
 
 	// Set by a board for lookouts that came from another machine.
-	Origin  string `json:"origin,omitempty"`  // the source's name
-	Tag     string `json:"tag,omitempty"`     // its own district, when the source folds them into one
-	Contact string `json:"contact,omitempty"` // "lost" while the source is out of contact
+	Origin       string `json:"origin,omitempty"`        // the source's name
+	HomeDistrict string `json:"home_district,omitempty"` // its own district, when the source folds them into one
+	Contact      string `json:"contact,omitempty"`       // "lost" while the source is out of contact
 }
 
 // Stood-down lookouts stay on the boards, grey, this long, then go.
@@ -52,6 +53,7 @@ func view(l *Lookout, at time.Time) View {
 		Status: l.Status, Message: l.Message, Value: l.Value,
 		CheckedAt: l.CheckedAt, MovedAt: l.MovedAt, LastClearAt: l.LastClearAt,
 		StatusSince: l.StatusSince, NextBy: l.NextBy, Until: l.Until, Link: l.Link, Source: l.Source,
+		Tags: cleanTags(l.Tags), // a file anyone wrote: held to what a tag is, as a feed's are
 	}
 	if v.Label == "" {
 		v.Label = l.Name

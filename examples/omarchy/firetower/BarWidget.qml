@@ -19,11 +19,16 @@ import qs.Ui
 // Hidden with no lookouts, the bar's white when all is clear, a count when
 // something needs a look, yellow on smoke, red on fire.
 //
-// Click opens the panel: the summary, every lookout that isn't clear (worst
+// Click opens the panel: the summary, every lookout shown that isn't clear (worst
 // first), sources out of contact, and a row that opens the board. A lookout's
-// row opens the board too; smoke or fire on this machine's own lookouts can be
-// marked seen from the panel (a source's lookouts are seen on the board,
-// which routes them to their machine). Right click opens the board directly.
+// row opens the board too; smoke or fire can be marked seen from the panel,
+// on any machine whose source can be acted on (`firetower seen` routes
+// another machine's through the running board). Right click opens the board
+// directly.
+//
+// With a board running (firetower board --open, or one at login),
+// `firetower bar` reads it rather than dialing every machine itself, so a
+// refresh costs a request on this machine. The panel says when none is.
 //
 // Colors come from the bar: fire is its alert color (the
 // theme's red), smoke the theme's yellow. A theme can set its own in a
@@ -40,7 +45,8 @@ Panel {
   readonly property string home: Quickshell.env("HOME")
   readonly property string firetower: home + "/.local/bin/firetower"
   readonly property string themeDir: home + "/.local/state/omarchy/current/theme"
-  readonly property string openBoardScript: Qt.resolvedUrl("open-board.sh").toString().replace(/^file:\/\//, "")
+  // A path, not a URL: decoded, so a folder with a space in its name works.
+  readonly property string openBoardScript: decodeURIComponent(Qt.resolvedUrl("open-board.sh").toString().replace(/^file:\/\//, ""))
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.55)
@@ -59,6 +65,10 @@ Panel {
   property string tooltip: "Firetower"
   property var trouble: []      // lookouts that aren't clear, worst first
   property var lostSources: []  // sources out of contact
+  property var actable: ({})    // source name -> whether its lookouts can be acted on
+  property bool boardUp: true   // the summary came from a running board
+  property string boardNote: "" // why a board that's up didn't answer, if one is
+  property string problem: ""   // firetower bar's own error (a broken config, say)
 
   // Keyboard cursor: 0 is the board row, 1..N the lookouts.
   property int cursor: 0
@@ -66,11 +76,12 @@ Panel {
 
   // Out of contact (a source unreachable) lights the bar like smoke rather
   // than turning it red: nothing is known to be burning.
-  readonly property bool fire: worst === "red"
+  readonly property bool fire: worst === "red" || problem !== ""
   readonly property bool smoke: worst === "yellow"
   readonly property bool needsLook: attention > 0
 
-  visible: count > 0 || opened
+  // Hidden while there's nothing to watch (no lookouts, and nothing wrong).
+  visible: count > 0 || opened || problem !== ""
   implicitWidth: visible ? button.implicitWidth : 0
   implicitHeight: visible ? button.implicitHeight : 0
 
@@ -112,14 +123,33 @@ Panel {
     root.close()
   }
 
-  function see(o) {
-    Quickshell.execDetached([root.firetower, "seen", String(o.id)])
-    settle.restart()
+  // Seen acknowledges smoke or fire, here or on a machine that can be acted on.
+  function canSee(o) {
+    return !!o && !o.seen && o.contact !== "lost" && (o.state === "red" || o.state === "yellow")
+      && (!o.origin || root.actable[o.origin] === true)
   }
+
+  // Seen runs one at a time, and says if it didn't work: another machine's
+  // can take a while, or fail (out of contact), and a quiet failure looks
+  // like a tap that didn't land, inviting another.
+  property string seeing: ""
+  function see(o) {
+    if (seer.running) return
+    root.seeing = String(o.label || o.id)
+    root.seeNote = ""
+    seer.command = [root.firetower, "seen", String(o.id)]
+    seer.running = true
+  }
+  property string seeNote: ""
 
   function update(raw) {
     var data
     try { data = JSON.parse(raw) } catch (e) { return }
+    // `firetower bar` says what's wrong instead of a summary when it can't
+    // make one: show that, never a quiet bar.
+    root.problem = data.error ? String(data.error) : ""
+    root.boardUp = data.board !== false
+    root.boardNote = data.board_note ? String(data.board_note) : ""
     root.worst = String(data.worst || "none")
     root.count = Number(data.count || 0)
     root.attention = Number(data.attention || 0)
@@ -145,15 +175,21 @@ Panel {
     if (root.cursor > list.length) root.cursor = list.length
 
     var lost = []
+    var acts = {}
     var sources = data.sources || []
-    for (var s = 0; s < sources.length; s++)
-      if (sources[s].contact !== "ok") lost.push(String(sources[s].name))
+    for (var s = 0; s < sources.length; s++) {
+      // "connecting" is a board that just started: not out of contact yet.
+      if (sources[s].contact === "lost") lost.push(String(sources[s].name))
+      acts[String(sources[s].name)] = sources[s].can_act === true
+    }
     root.lostSources = lost
+    root.actable = acts
 
     var lines = []
     for (var i = 0; i < list.length; i++)
       lines.push(list[i].id + ": " + word(list[i].state) + (list[i].message ? " -- " + list[i].message : ""))
-    root.tooltip = ["Firetower: " + headline().toLowerCase()].concat(lines).join("\n")
+    root.tooltip = root.problem ? "Firetower: " + root.problem
+      : ["Firetower: " + headline().toLowerCase()].concat(lines).join("\n")
   }
 
   function activateCursor() {
@@ -205,6 +241,18 @@ Panel {
     stdout: StdioCollector {
       waitForEnd: true
       onStreamFinished: root.update(text)
+    }
+  }
+
+  Process {
+    id: seer
+    stderr: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: if (text.trim() !== "") root.seeNote = root.seeing + ": " + text.trim().replace(/^firetower: /, "")
+    }
+    onExited: function(exitCode) {
+      if (exitCode === 0) root.seeNote = ""
+      settle.restart()
     }
   }
 
@@ -332,7 +380,7 @@ Panel {
         else if (t === "b" || t === "B") root.openBoard()
         else if ((t === "s" || t === "S") && root.cursorActive && root.cursor > 0) {
           var o = root.trouble[root.cursor - 1]
-          if (o && !o.origin && !o.seen && (o.state === "red" || o.state === "yellow")) root.see(o)
+          if (root.canSee(o)) root.see(o)
         }
       }
 
@@ -355,7 +403,8 @@ Panel {
           PanelHero {
             width: parent.width
             title: "Firetower"
-            meta: root.headline() + " · " + root.count + " lookout" + (root.count === 1 ? "" : "s")
+            meta: root.problem ? "Can't read the lookouts"
+              : root.headline() + " · " + root.count + " lookout" + (root.count === 1 ? "" : "s")
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
@@ -366,6 +415,22 @@ Panel {
                 font.pixelSize: Style.font.display
               }
             }
+          }
+
+          Text {
+            visible: root.problem !== "" || !root.boardUp || root.seeNote !== ""
+            width: parent.width
+            leftPadding: Style.space(10)
+            rightPadding: Style.space(10)
+            textFormat: Text.PlainText
+            wrapMode: Text.WordWrap
+            text: root.seeNote !== "" ? "Seen didn't work: " + root.seeNote
+              : root.problem !== "" ? root.problem
+              : root.boardNote !== "" ? "The board didn't answer (" + root.boardNote + "), so this refresh dialed each machine."
+              : "No board is running, so every refresh dials each machine. Opening the board starts one."
+            color: root.problem !== "" || root.seeNote !== "" ? root.fireColor : root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
           }
 
           LinkRow {
@@ -472,9 +537,7 @@ Panel {
     id: row
     property var lookout: ({})
     property int rowIndex: 0
-    // Seen acknowledges smoke or fire; a source's lookouts are seen on the board.
-    readonly property bool canSee: !lookout.origin && !lookout.seen
-      && (lookout.state === "red" || lookout.state === "yellow")
+    readonly property bool canSee: root.canSee(lookout)
 
     hasCursor: root.cursorActive && root.cursor === rowIndex
     foreground: root.foreground

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,7 @@ type Lookout struct {
 	Seen        *Seen      `json:"seen"`
 	Link        string     `json:"link,omitempty"`
 	Source      string     `json:"source,omitempty"`
+	Tags        tagList    `json:"tags,omitempty"`
 
 	extra map[string]json.RawMessage
 }
@@ -50,7 +52,7 @@ type Seen struct {
 }
 
 var knownFields = []string{"name", "district", "tower", "label", "status", "message", "value",
-	"moved_at", "checked_at", "last_clear_at", "status_since", "next_by", "until", "seen", "link", "source"}
+	"moved_at", "checked_at", "last_clear_at", "status_since", "next_by", "until", "seen", "link", "source", "tags"}
 
 func (l *Lookout) UnmarshalJSON(b []byte) error {
 	type plain Lookout
@@ -98,6 +100,90 @@ var statuses = map[string]bool{"green": true, "yellow": true, "red": true, "done
 // are held to a safe alphabet: lowercase (case-insensitive file systems would
 // make Deploy and deploy one file), no slashes, no leading dot.
 var nameRE = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+
+// tagList is tags as JSON reads them: a list of strings. Anything else (a
+// lone string, numbers, junk from a file or a feed someone else wrote) reads
+// as the strings it holds, or none, never as an error that would lose the
+// whole lookout. Which of them are tags is decided by cleanTags.
+type tagList []string
+
+func (t *tagList) UnmarshalJSON(b []byte) error {
+	var raw []json.RawMessage
+	if json.Unmarshal(b, &raw) != nil {
+		var one string
+		if json.Unmarshal(b, &one) == nil {
+			*t = tagList{one}
+		} else {
+			*t = nil
+		}
+		return nil
+	}
+	out := tagList{}
+	for _, r := range raw {
+		var s string
+		if json.Unmarshal(r, &s) == nil {
+			out = append(out, s)
+		}
+	}
+	*t = out
+	return nil
+}
+
+// Tags are words a lookout carries for whoever reads it: a board groups by
+// them, a person's own script acts on them (firetower ls --tag, rm --tag, gc
+// --tag). They're names, so they read the same everywhere, and few.
+const maxTags = 16
+
+// parseTags reads --tag values: each a word, or words split by commas.
+// "none" alone clears them. The result is sorted and has no repeats, so the
+// same tags given in any order are the same tags.
+func parseTags(vals []string) ([]string, error) {
+	if len(vals) == 1 && strings.TrimSpace(vals[0]) == "none" {
+		return []string{}, nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, v := range vals {
+		for _, t := range strings.Split(v, ",") {
+			t = strings.TrimSpace(t)
+			if t == "none" {
+				return nil, fmt.Errorf("--tag none clears the tags, so it goes alone")
+			}
+			if t == "" {
+				return nil, fmt.Errorf("--tag %q: an empty tag (a stray comma?)", v)
+			}
+			if err := checkName("--tag", t); err != nil {
+				return nil, err
+			}
+			if !seen[t] {
+				seen[t] = true
+				out = append(out, t)
+			}
+		}
+	}
+	if len(out) > maxTags {
+		return nil, fmt.Errorf("--tag: %d tags, and a lookout carries at most %d", len(out), maxTags)
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// hasTags: the lookout carries every one of want.
+func hasTags(have, want []string) bool {
+	for _, w := range want {
+		found := false
+		for _, h := range have {
+			if h == w {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
 
 func checkName(kind, s string) error {
 	if !nameRE.MatchString(s) {

@@ -45,22 +45,22 @@ printf '%s\n' "2026-10-31 09:00 export started" "2026-10-31 09:04 wrote 1,204 ro
 # This machine: two districts, every state.
 FIRETOWER_NOW=$(ago 3H) $B set website/checkout/deploy-landed green "Live, build a1b2c3d." --value a1b2c3d --label "Deploy lands" --link https://example.com/deploys/123 --source "crontinental:deploy-landed"
 $B set website/checkout/deploy-landed green "Live, build a1b2c3d." --value a1b2c3d --next 30m
-$B set website/admin/keepalive yellow "Response 2.8s, over the 2s budget." --value slow --next 10m --label "Admin keepalive"
-$B set website/questionnaire/intake red "Form submit returns 500." --value 500 --next 10m --label "Intake form"
+$B set website/admin/keepalive yellow "Response 2.8s, over the 2s budget." --value slow --next 10m --label "Admin keepalive" --tag health
+$B set website/questionnaire/intake red "Form submit returns 500." --value 500 --next 10m --label "Intake form" --tag health,forms
 FIRETOWER_NOW=$(ago 5H) $B set website/admin/backup green "Backed up 2.1 GB." --next 1h --label "Nightly backup" --link "$APP/logs/export.log"
 $B set app/signup/otp yellow "SMS delivery slow (40s)." --value slow --next 15m --label "OTP delivery"
 $B seen app/signup/otp
 FIRETOWER_NOW=$(ago 2H) $B expect app/checkout/stripe-webhooks --next 30m --label "Stripe webhooks"
 $B expect app/checkout/refunds --next 2h --label "Refund queue"
-$B set app/checkout/order-sync green "Synced 12 orders." --next 30m --label "Order sync" --link "$APP/logs/export.log"
-FIRETOWER_NOW=$(ago 2H) $B set app/checkout/hotfix green "Fix landed." --until 1h --label "Hotfix lands"
+$B set app/checkout/order-sync green "Synced 12 orders." --next 30m --label "Order sync" --link "$APP/logs/export.log" --tag orders
+FIRETOWER_NOW=$(ago 2H) $B set app/checkout/hotfix green "Fix landed." --until 1h --label "Hotfix lands" --tag temporary
 $B set app/checkout/old-fix green "Fix landed." --label "Old fix"
 $B done app/checkout/old-fix "Landed at 4:12 pm."
 $B set app/signup/captcha green "A label long enough to wrap: the captcha provider answered every challenge within budget across all regions." --label "Captcha provider health across every region we serve"
 
 # The other machine, folded into one district.
-FIRETOWER_DIR=$OTHER FIRETOWER_CONFIG=/nonexistent $B set example-shop/orders/stuck yellow "3 orders waiting over an hour." --label "Stuck orders" --value 3 --next 15m
-FIRETOWER_DIR=$OTHER FIRETOWER_CONFIG=/nonexistent $B set example-shop/site/up green "200 in 180ms." --label "Site up" --next 5m
+FIRETOWER_DIR=$OTHER FIRETOWER_CONFIG=/nonexistent $B set example-shop/orders/stuck yellow "3 orders waiting over an hour." --label "Stuck orders" --value 3 --next 15m --tag orders
+FIRETOWER_DIR=$OTHER FIRETOWER_CONFIG=/nonexistent $B set example-shop/site/up green "200 in 180ms." --label "Site up" --next 5m --tag health
 
 # A machine that answered once and went away: its lookouts stay, marked out of contact.
 FIRETOWER_DIR=$APP/old-machine FIRETOWER_CONFIG=/nonexistent $B set reports/weekly/digest green "Digest sent to 40 people." --label "Weekly digest" --next 7d
@@ -68,6 +68,9 @@ FIRETOWER_DIR=$APP/old-machine FIRETOWER_CONFIG=/nonexistent $B set reports/week
 # A report nobody can read: it must show as fire, never as nothing.
 mkdir -p "$FIRETOWER_DIR/app/signup"
 printf '{"name": "broken", "status": ' > "$FIRETOWER_DIR/app/signup/webhook-relay.json"
+
+# A watch tagged temporary that's already over, for gc --tag to take.
+FIRETOWER_NOW=$(ago 3H) $B set app/checkout/canary green "10% healthy." --label "Canary" --until 1h --tag temporary
 
 # The board, as a person runs it.
 "$B" board --port "$ADMINISTRATION_PORT_WEB" >"$APP/board.log" 2>&1 </dev/null &

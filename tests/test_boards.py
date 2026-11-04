@@ -83,8 +83,8 @@ class Sources(Remote):
         s = self.bar()
         self.assertEqual([d["name"] for d in s["districts"]], ["work"])
         vs = {v["id"]: v for d in s["districts"] for t in d["towers"] for v in t["lookouts"]}
-        self.assertEqual(vs["work-mac:website/checkout/deploy"]["tag"], "website")
-        self.assertEqual(vs["work-mac:app/signup/otp"]["tag"], "app")
+        self.assertEqual(vs["work-mac:website/checkout/deploy"]["home_district"], "website")
+        self.assertEqual(vs["work-mac:app/signup/otp"]["home_district"], "app")
 
     def test_lost_machines_count_once_each(self):
         self.write_config(name="gone-mac", command=["sh", "-c", "exit 255"])
@@ -118,10 +118,10 @@ class Sources(Remote):
         feed = "\n".join([
             "Welcome to work-mac!",
             json.dumps({"type": "hello", "v": 1}),
-            json.dumps({"type": "lookout", "lookout": {"id": "a/b/c", "district": "../../x", "tower": "b", "name": "c",
+            json.dumps({"type": "lookout", "lookout": {"id": "../../x/b/c", "district": "../../x", "tower": "b", "name": "c",
                                                        "label": "L\u001b[31m", "state": "red", "message": "m\nm\u202e"}}),
             "{broken",
-            json.dumps({"type": "sync", "ids": ["a/b/c"]}),
+            json.dumps({"type": "sync", "ids": ["../../x/b/c"]}),
         ])
         self.write_config(name="evil", command=["printf", "%s\\n", feed])
         s = self.bar()
@@ -203,6 +203,20 @@ class Shown(Remote):
         self.assertNotIn("shared:inbox/bob/new", ids)
         self.assertNotEqual(req("POST", "/api/seen", {"id": "shared:inbox/bob/new"})[0], 200)
         self.assertEqual(req("POST", "/api/seen", {"id": "shared:inbox/carol/new"})[0], 200)
+
+    def test_hidden_or_unknown_ids_reach_no_button_and_no_link(self):
+        (self.tmp / "log").write_text("secret log\n")
+        self.ft("set", "inbox/alice/new", "red", "--link", str(self.tmp / "log"))
+        self.config.write_text('[board]\nhide = ["inbox/*"]\n')
+        req = self.start_board()
+        for verb in ("done", "rm"):
+            self.assertNotEqual(req("POST", f"/api/{verb}", {"id": "inbox/alice/new"})[0], 200, verb)
+        status, body = req("GET", "/api/link?id=inbox/alice/new")
+        self.assertNotEqual(status, 200)
+        self.assertNotIn("secret", body)
+        # Watch again books one that's there: a button never makes a new one.
+        self.assertNotEqual(req("POST", "/api/expect", {"id": "app/new/one"})[0], 200)
+        self.assertNotIn("app/new/one", self.ls())
 
     def test_this_machines_hidden_lookouts_cant_be_acted_on(self):
         self.ft("set", "inbox/alice/new", "red")
@@ -432,6 +446,7 @@ class Board(Firetower):
 
     def test_feed_streams(self):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        self.addCleanup(c.close)
         c.request("GET", "/api/feed?key=" + self.key, headers={"Host": f"127.0.0.1:{self.port}"})
         r = c.getresponse()
         self.assertEqual(r.getheader("Content-Type"), "text/event-stream")
@@ -486,6 +501,7 @@ class CustomUI(Firetower):
         c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
         c.request("GET", "/")
         self.assertIn("mine", c.getresponse().read().decode())
+        c.close()
 
     def test_ui_needs_an_index(self):
         self.ft("board", "--ui", str(self.tmp), "--port", str(free_port()), ok=False)

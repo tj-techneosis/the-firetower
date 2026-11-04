@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -260,6 +261,12 @@ func (p *post) apply(r *remote, e Event) bool {
 			break
 		}
 		v := *e.Lookout
+		// The id is made of the names, as every watch feed makes it; one
+		// that says otherwise could be filtered by one name and acted on
+		// by another, so it's dropped.
+		if v.ID != v.District+"/"+v.Tower+"/"+v.Name {
+			break
+		}
 		// A tower this board doesn't show is dropped as it comes in, so
 		// nothing (the boards, the feed, the counts, act) ever sees it.
 		// Matched on the names the board will show (a name that isn't one
@@ -316,6 +323,21 @@ func (p *post) state() State {
 	return st
 }
 
+// cleanTags keeps a feed's tags that are tags (names), at most maxTags,
+// sorted, so a board groups another machine's lookouts as safely as its own.
+func cleanTags(in []string) tagList {
+	var out tagList
+	seen := map[string]bool{}
+	for _, t := range in {
+		if checkName("tag", t) == nil && !seen[t] && len(out) < maxTags {
+			seen[t] = true
+			out = append(out, t)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 // placeNames is a feed lookout's district and tower as a board shows them:
 // a name that isn't one is "unnamed".
 func placeNames(v View) (district, tower string) {
@@ -333,7 +355,17 @@ func placeRemote(r *remote, v View) View {
 	v.Origin = r.src.Name
 	v.ID = r.src.Name + ":" + cleanText(v.ID, 200)
 	v.Name = cleanText(v.Name, 64)
-	v.Tag = cleanText(v.Tag, 64)
+	v.HomeDistrict = ""
+	v.Tags = cleanTags(v.Tags)
+	// What a board works out is its own to say: a feed's word for it is
+	// taken only when it's one of the words.
+	v.Contact = ""
+	if v.Movement != "moved" && v.Movement != "still" {
+		v.Movement = ""
+	}
+	if v.DoneBy != "report" && v.DoneBy != "until" {
+		v.DoneBy = ""
+	}
 	if !knownStates[v.State] {
 		v.State = "stale" // a word this board doesn't know: shown as needing a look, never as clear
 	}
@@ -344,7 +376,7 @@ func placeRemote(r *remote, v View) View {
 	v.Link = cleanText(v.Link, 2000)
 	v.District, v.Tower = placeNames(v)
 	if r.src.District != "" {
-		v.Tag, v.District = v.District, r.src.District
+		v.HomeDistrict, v.District = v.District, r.src.District
 	}
 	if r.status.Contact == "lost" {
 		v.Contact = "lost"
@@ -404,7 +436,11 @@ func (p *post) act(verb, id string) error {
 		case "rm":
 			err = rmLookout(parts[0], parts[1], parts[2])
 		case "expect":
-			// Watch again: book it again, as `firetower expect` does.
+			// Watch again: book again one that's there, as `firetower
+			// expect` does. A button never makes a new lookout.
+			if _, serr := os.Stat(lookoutPath(stateDir(), parts[0], parts[1], parts[2])); serr != nil {
+				return fmt.Errorf("no lookout %q", id)
+			}
 			err = cmdExpect([]string{id})
 		}
 		p.refreshLocal()
@@ -424,27 +460,44 @@ func (p *post) act(verb, id string) error {
 	}
 	p.mu.Lock()
 	_, known := r.views[orig]
+	lost := r.status.Contact == "lost"
 	p.mu.Unlock()
 	if !known {
 		return fmt.Errorf("no lookout %q", id)
 	}
-	// The id goes to another machine's command line: hold it to the name
-	// alphabet first, so it can only ever be one plain argument.
-	for _, x := range strings.Split(orig, "/") {
+	if lost {
+		return fmt.Errorf("%s is out of contact, so it can't be reached; try again once it's back", origin)
+	}
+	return runAct(r.src, verb, orig)
+}
+
+// runAct runs a source's act command for one lookout (its own id there).
+// The id goes to another machine's command line, usually through ssh and a
+// shell there, so it is held to the name alphabet first and can only ever be
+// one plain argument; and nothing else goes with it (no message).
+func runAct(src Source, verb, orig string) error {
+	if len(src.Act) == 0 {
+		return fmt.Errorf("source %s has no act command, so its lookouts can only be looked at", src.Name)
+	}
+	parts := strings.Split(orig, "/")
+	if len(parts) != 3 {
+		return fmt.Errorf("no lookout %q", orig)
+	}
+	for _, x := range parts {
 		if err := checkName("name", x); err != nil {
 			return err
 		}
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	args := append(append([]string{}, r.src.Act[1:]...), verb, orig)
-	out, err := exec.CommandContext(ctx, r.src.Act[0], args...).CombinedOutput()
+	args := append(append([]string{}, src.Act[1:]...), verb, orig)
+	out, err := exec.CommandContext(ctx, src.Act[0], args...).CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))
 		if msg == "" {
 			msg = err.Error()
 		}
-		return fmt.Errorf("%s: %s", origin, cleanText(msg, maxText))
+		return fmt.Errorf("%s: %s", src.Name, cleanText(msg, maxText))
 	}
 	return nil
 }
@@ -459,6 +512,8 @@ type Summary struct {
 	Attention int            `json:"attention"` // fire, smoke and no word (not seen), and each machine out of contact
 	Districts []DistrictSum  `json:"districts"`
 	Sources   []SourceStatus `json:"sources"`
+	Board     bool           `json:"board"`                // read from a running board (false: none answered, so the bar dialed every source itself)
+	BoardNote string         `json:"board_note,omitempty"` // why this person's board, up, didn't answer
 }
 
 type DistrictSum struct {

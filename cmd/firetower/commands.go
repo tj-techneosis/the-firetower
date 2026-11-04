@@ -15,7 +15,7 @@ import (
 // reportFlags are the flags every report takes (set, run, expect).
 var reportFlags = map[string]bool{
 	"district": true, "tower": true, "label": true, "value": true, "link": true, "source": true,
-	"next": true, "until": true,
+	"next": true, "until": true, "tag": true,
 }
 
 func with(base map[string]bool, more ...string) map[string]bool {
@@ -226,6 +226,13 @@ func applyCommon(l *Lookout, f flags, at time.Time, anchor bool) error {
 	if v := f.str("source"); v != nil {
 		l.Source = cleanText(*v, 120)
 	}
+	if f.has("tag") {
+		tags, err := parseTags(f.list("tag"))
+		if err != nil {
+			return err
+		}
+		l.Tags = tags
+	}
 	return nil
 }
 
@@ -317,7 +324,7 @@ func atTerminal() bool {
 }
 
 func cmdSet(args []string) error {
-	const u = `set NAME STATUS ["MESSAGE"] [--district D] [--tower T] [--label L] [--value V] [--next 30m] [--until 6h] [--link X] [--source S]`
+	const u = `set NAME STATUS ["MESSAGE"] [--district D] [--tower T] [--label L] [--value V] [--next 30m] [--until 6h] [--link X] [--source S] [--tag T]...`
 	f, err := parseFlags(args, reportFlags, true)
 	if err != nil {
 		return bad(u, err)
@@ -344,10 +351,14 @@ func cmdSet(args []string) error {
 		return err
 	}
 	_, err = update(d, t, n, true, func(l *Lookout, at time.Time) error {
+		tags := l.Tags
 		if err := applyCommon(l, f, at, false); err != nil {
 			return err
 		}
-		if !report(l, status, msg, f.str("value"), at) || (status != "done" && view(l, at).State == "done") {
+		if !report(l, status, msg, f.str("value"), at) {
+			l.Tags = tags // a stood-down watch is only noted as alive: its tags stay what they were
+			stoodDown(l.ID())
+		} else if status != "done" && view(l, at).State == "done" {
 			stoodDown(l.ID())
 		}
 		return nil
@@ -360,7 +371,7 @@ func cmdSet(args []string) error {
 // once the --next it was given has passed. Expecting is booking: it anchors
 // a span for --until afresh.
 func cmdExpect(args []string) error {
-	const u = `expect NAME [--next 30m] [--until 6h] [--district D] [--tower T] [--label L] [--link X] [--source S]`
+	const u = `expect NAME [--next 30m] [--until 6h] [--district D] [--tower T] [--label L] [--link X] [--source S] [--tag T]...`
 	f, err := parseFlags(args, reportFlags, false)
 	if err != nil {
 		return bad(u, err)
@@ -404,11 +415,30 @@ func cmdSeen(args []string) error {
 	if len(f.pos) != 1 {
 		return badf(u, "seen takes one NAME")
 	}
+	if elsewhere(f.pos[0]) {
+		if err := noPlaceFlags(f); err != nil {
+			return bad(u, err)
+		}
+		return actElsewhere("seen", f.pos[0])
+	}
 	d, t, n, err := where(f.pos[0], f, true)
 	if err != nil {
 		return err
 	}
 	return seen(d, t, n)
+}
+
+// elsewhere: a NAME that is another machine's lookout, as the boards print
+// it ("work-mac:website/checkout/deploy"). A name of this machine's can't
+// hold a ":".
+func elsewhere(name string) bool { return strings.Contains(name, ":") }
+
+// noPlaceFlags: another machine's NAME already says where it is.
+func noPlaceFlags(f flags) error {
+	if f.has("district") || f.has("tower") {
+		return fmt.Errorf("another machine's lookout (source:district/tower/name) already says where it is; leave out --district and --tower")
+	}
+	return nil
 }
 
 func seen(d, t, n string) error {
@@ -442,6 +472,16 @@ func cmdDone(args []string) error {
 	if len(f.pos) == 2 {
 		msg = f.pos[1]
 	}
+	if elsewhere(f.pos[0]) {
+		if err := noPlaceFlags(f); err != nil {
+			return bad(u, err)
+		}
+		if msg != "" || f.dash {
+			// It would cross a shell on the other machine: no free text goes.
+			return fmt.Errorf("a message can't go to another machine's lookout; without one, done keeps what the watch last said")
+		}
+		return actElsewhere("done", f.pos[0])
+	}
 	d, t, n, err := where(f.pos[0], f, true)
 	if err != nil {
 		return err
@@ -469,15 +509,31 @@ func done(d, t, n, msg string) error {
 }
 
 func cmdRm(args []string) error {
-	const u = "rm NAME | rm --district D [--tower T]"
-	f, err := parseFlags(args, map[string]bool{"district": true, "tower": true}, false)
+	const u = "rm NAME | rm --district D [--tower T] | rm --tag T... [--district D] [--tower T]"
+	f, err := parseFlags(args, map[string]bool{"district": true, "tower": true, "tag": true}, false)
 	if err != nil {
 		return bad(u, err)
 	}
-	if len(f.pos) > 1 || (len(f.pos) == 0 && !f.has("district") && !f.has("tower")) {
-		return badf(u, "rm takes one NAME, or --district (and --tower) to remove a whole district or tower")
+	if len(f.pos) > 1 || (len(f.pos) == 0 && !f.has("district") && !f.has("tower") && !f.has("tag")) {
+		return badf(u, "rm takes one NAME, --district (and --tower) to remove a whole district or tower, or --tag to remove what carries it")
+	}
+	if f.has("tag") {
+		if len(f.pos) != 0 {
+			return badf(u, "rm --tag removes every lookout carrying the tags, so it takes no NAME")
+		}
+		tags, err := tagFilter(f)
+		if err != nil {
+			return bad(u, err)
+		}
+		return rmTagged(f, tags)
 	}
 	if len(f.pos) == 1 {
+		if elsewhere(f.pos[0]) {
+			if err := noPlaceFlags(f); err != nil {
+				return bad(u, err)
+			}
+			return actElsewhere("rm", f.pos[0])
+		}
 		d, t, n, err := where(f.pos[0], f, true)
 		if err != nil {
 			return err
@@ -558,6 +614,54 @@ func cmdRm(args []string) error {
 	return nil
 }
 
+// rmTagged removes every lookout carrying all of tags, in any state, within
+// --district and --tower when they're given (exactly: no default district,
+// since a tag already says which).
+func rmTagged(f flags, tags []string) error {
+	for _, k := range []string{"district", "tower"} {
+		if f.has(k) {
+			if err := checkName(k, f.get(k)); err != nil {
+				return err
+			}
+		}
+	}
+	dir := stateDir()
+	unlock, err := lockDir(dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	n := 0
+	ls, bad := loadAll(dir)
+	for _, l := range ls {
+		if f.has("district") && l.District != f.get("district") || f.has("tower") && l.Tower != f.get("tower") || !hasTags(l.Tags, tags) {
+			continue
+		}
+		if os.Remove(lookoutPath(dir, l.District, l.Tower, l.Name)) == nil {
+			n++
+			removeEmpty(dir, l.District, l.Tower)
+		}
+	}
+	unreadable(bad)
+	if n == 0 {
+		// Not an error (a tidy-up run twice finds nothing the second time),
+		// but said, so a typo in a script's tag shows in its log.
+		fmt.Fprintf(os.Stderr, "firetower: no lookout carries %s, so nothing was removed\n", strings.Join(tags, " and "))
+	}
+	fmt.Printf("removed %d lookout%s tagged %s\n", n, plural(n), strings.Join(tags, ", "))
+	return nil
+}
+
+// unreadable says when lookout files couldn't be read, so a command that
+// went by their tags couldn't see them: a broken file stays, and shows as
+// fire on the board.
+func unreadable(bad []broken) {
+	if len(bad) > 0 {
+		fmt.Fprintf(os.Stderr, "firetower: %d lookout file%s can't be read, so %s tags aren't known (firetower ls shows %s)\n",
+			len(bad), plural(len(bad)), map[bool]string{true: "its", false: "their"}[len(bad) == 1], map[bool]string{true: "it", false: "them"}[len(bad) == 1])
+	}
+}
+
 func rmLookout(d, t, n string) error {
 	dir := stateDir()
 	unlock, err := lockDir(dir)
@@ -580,21 +684,27 @@ func plural(n int) string {
 }
 
 func cmdLs(args []string) error {
-	const u = "ls [--district D] [--tower T] [--all] [--json]"
-	f, err := parseFlags(args, map[string]bool{"district": true, "tower": true, "json": false, "all": false}, false)
+	const u = "ls [--district D] [--tower T] [--tag T]... [--all] [--json]"
+	f, err := parseFlags(args, map[string]bool{"district": true, "tower": true, "tag": true, "json": false, "all": false}, false)
 	if err != nil {
 		return bad(u, err)
 	}
 	if len(f.pos) != 0 {
-		return badf(u, "ls takes no NAME: filter with --district or --tower")
+		return badf(u, "ls takes no NAME: filter with --district, --tower or --tag")
+	}
+	tags, err := tagFilter(f)
+	if err != nil {
+		return bad(u, err)
 	}
 	at := now()
 	var vs []View
+	anyTags := false
 	for _, v := range localViews(stateDir(), at, f.has("all")) {
-		if f.has("district") && v.District != f.get("district") || f.has("tower") && v.Tower != f.get("tower") {
+		if f.has("district") && v.District != f.get("district") || f.has("tower") && v.Tower != f.get("tower") || !hasTags(v.Tags, tags) {
 			continue
 		}
 		vs = append(vs, v)
+		anyTags = anyTags || len(v.Tags) > 0
 	}
 	if f.has("json") {
 		if vs == nil {
@@ -606,7 +716,7 @@ func cmdLs(args []string) error {
 	}
 	if len(vs) == 0 {
 		switch {
-		case f.has("district") || f.has("tower"):
+		case f.has("district") || f.has("tower") || f.has("tag"):
 			fmt.Println("No lookouts there. firetower ls shows them all.")
 		case !f.has("all") && len(localViews(stateDir(), at, true)) > 0:
 			fmt.Println("Nothing on watch: only lookouts stood down over a day ago (firetower ls --all shows them).")
@@ -616,15 +726,38 @@ func cmdLs(args []string) error {
 		return nil
 	}
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "STATE\tLOOKOUT\tCHECKED\tMESSAGE")
+	head := "STATE\tLOOKOUT\tCHECKED\tMESSAGE"
+	if anyTags {
+		head = "STATE\tLOOKOUT\tTAGS\tCHECKED\tMESSAGE"
+	}
+	fmt.Fprintln(w, head)
 	for _, v := range vs {
 		st := v.State
 		if v.Seen {
 			st += " (seen)"
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", st, v.ID, ago(v.CheckedAt, at), lsMessage(v, at))
+		id := v.ID
+		if anyTags {
+			t := strings.Join(v.Tags, ",")
+			if t == "" {
+				t = "-"
+			}
+			id += "\t" + t
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", st, id, ago(v.CheckedAt, at), lsMessage(v, at))
 	}
 	return w.Flush()
+}
+
+// tagFilter is the --tag a reader filters by: every one must be on a lookout.
+func tagFilter(f flags) ([]string, error) {
+	if !f.has("tag") {
+		return nil, nil
+	}
+	if len(f.list("tag")) == 1 && strings.TrimSpace(f.get("tag")) == "none" {
+		return nil, fmt.Errorf("--tag none clears a lookout's tags; to filter, name a tag")
+	}
+	return parseTags(f.list("tag"))
 }
 
 // lsMessage is the message with what the Firetower knows that the check
@@ -710,8 +843,25 @@ func ago(t *time.Time, at time.Time) string {
 }
 
 func cmdGc(args []string) error {
-	if len(args) != 0 {
-		return badf("gc", "gc takes nothing")
+	const u = "gc [--tag T]..."
+	f, err := parseFlags(args, map[string]bool{"tag": true}, false)
+	if err != nil {
+		return bad(u, err)
+	}
+	if len(f.pos) != 0 {
+		return badf(u, "gc takes nothing but --tag")
+	}
+	tags, err := tagFilter(f)
+	if err != nil {
+		return bad(u, err)
+	}
+	if tags != nil {
+		n, err := gcTagged(stateDir(), now(), tags)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("cleared %d stood-down lookout%s tagged %s\n", n, plural(n), strings.Join(tags, ", "))
+		return nil
 	}
 	n, err := gc(stateDir(), now())
 	if err != nil {
@@ -719,6 +869,36 @@ func cmdGc(args []string) error {
 	}
 	fmt.Printf("cleared %d stood-down lookout%s\n", n, plural(n))
 	return nil
+}
+
+// gcTagged forgets every stood-down lookout carrying all of tags, at once
+// rather than a day on: "a temporary watch goes when it's over", for a
+// person's own script or scheduler to say. The Firetower does nothing by
+// itself; this is the command it's said with.
+func gcTagged(dir string, at time.Time, tags []string) (int, error) {
+	unlock, err := lockDir(dir)
+	if err != nil {
+		return 0, err
+	}
+	defer unlock()
+	n, carried := 0, false
+	ls, bad := loadAll(dir)
+	defer unreadable(bad)
+	for _, l := range ls {
+		carried = carried || hasTags(l.Tags, tags)
+		if view(l, at).State == "done" && hasTags(l.Tags, tags) {
+			if os.Remove(lookoutPath(dir, l.District, l.Tower, l.Name)) == nil {
+				n++
+				removeEmpty(dir, l.District, l.Tower)
+			}
+		}
+	}
+	if !carried {
+		// Nothing over is a normal day; nothing carrying the tag at all
+		// may be a typo, so it's said.
+		fmt.Fprintf(os.Stderr, "firetower: no lookout carries %s\n", strings.Join(tags, " and "))
+	}
+	return n, nil
 }
 
 // gc deletes the files of lookouts stood down over a day ago (readers have

@@ -21,7 +21,7 @@ import (
 // fire before it goes. The command's output passes through untouched and its
 // exit code is run's own, so the scheduler's history stays true too.
 func cmdRun(args []string) error {
-	const u = `run NAME [--district D] [--tower T] [--label L] [--next 30m] [--until 6h] [--link X] [--source S] [--message M] -- CMD ...`
+	const u = `run NAME [--district D] [--tower T] [--label L] [--next 30m] [--until 6h] [--link X] [--source S] [--tag T]... [--message M] -- CMD ...`
 	f, err := parseFlags(args, with(reportFlags, "message"), true)
 	if err != nil {
 		hasDash := false
@@ -108,10 +108,14 @@ func cmdRun(args []string) error {
 	// a normal exit: "Can't run" and "Stopped" always say so.
 	rep := func(status, msg string, value *string) error {
 		_, err := update(d, t, n, true, func(l *Lookout, at time.Time) error {
+			tags := l.Tags
 			if err := applyCommon(l, f, at, false); err != nil {
 				return err
 			}
-			if !report(l, status, msg, value, at) || view(l, at).State == "done" {
+			if !report(l, status, msg, value, at) {
+				l.Tags = tags // a stood-down watch is only noted as alive: its tags stay what they were
+				stoodDown(l.ID())
+			} else if view(l, at).State == "done" {
 				stoodDown(l.ID())
 			}
 			return nil

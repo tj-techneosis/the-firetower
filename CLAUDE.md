@@ -17,6 +17,7 @@ Claude Code setup.
 | `cmd/firetower/run.go` | `run`: a wrapped check, its exit code, its signals |
 | `cmd/firetower/watch.go` | the feed (`watch --json`) |
 | `cmd/firetower/sources.go` | the post both boards read: this machine and the sources |
+| `cmd/firetower/hub.go` | asking a running board first: `bar`'s state, `seen`/`done`/`rm` on another machine's lookout |
 | `cmd/firetower/bar.go`, `board.go`, `ui/` | the boards |
 | `agents/` | what ships to users' Claude Code: the skill and the CLAUDE.md snippet |
 | `examples/` | SwiftBar, Waybar, the Omarchy bar plugin (`omarchy/firetower`), board-at-login, a config |
@@ -39,7 +40,9 @@ Claude Code setup.
   read them. Fields are added, never renamed or repurposed; unknown fields in
   a file are kept. A breaking feed change bumps `feedVersion`.
 - **The Firetower owns** `moved_at`, `last_clear_at`, `status_since`,
-  `expected_at` and `seen`. Checks never write them, and every write goes
+  and `seen`. Tags are the person's: the Firetower keeps and
+  shows them and acts on one only when told to (`rm`/`gc --tag`), never by a
+  rule of its own. Checks never write them, and every write goes
   through `update` (the lock, then read-change-write).
 - **No clock.** The scheduler owns every time: how often a check runs, how
   long it may, when the watch ends. The Firetower never times, schedules or

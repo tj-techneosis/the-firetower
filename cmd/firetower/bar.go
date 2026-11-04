@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"net/url"
@@ -27,8 +28,8 @@ var boardColor = map[string]string{
 var barOrder = []string{"red", "lost", "stale", "yellow", "waiting", "seen", "green"}
 
 func cmdBar(args []string) error {
-	f, err := parseFlags(args, map[string]bool{"format": true, "template": true, "timeout": true}, false)
-	const u = "bar [--format plain|json|waybar|swiftbar] [--template T] [--timeout 8s]"
+	f, err := parseFlags(args, map[string]bool{"format": true, "template": true, "timeout": true, "tag": true}, false)
+	const u = "bar [--format plain|json|waybar|swiftbar] [--template T] [--tag T]... [--timeout 8s]"
 	if err != nil {
 		return bad(u, err)
 	}
@@ -62,9 +63,46 @@ func cmdBar(args []string) error {
 		// A bar that prints nothing looks like a quiet one. Say it.
 		return printBarError(format, cerr)
 	}
-	p := newPost(cfg)
-	p.once(timeout)
-	s := summarize(p.state())
+	tags, err := tagFilter(f)
+	if err != nil {
+		return bad(u, err)
+	}
+	// A running board has the whole picture already: ask it. Only with
+	// none does the bar dial every source itself, once, and go.
+	st, berr := askBoard(cfg)
+	if berr != nil {
+		p := newPost(cfg)
+		p.once(timeout)
+		got := p.state()
+		st = &got
+	}
+	if tags != nil {
+		kept := []View{}
+		has := map[string]bool{}
+		for _, v := range st.Lookouts {
+			if hasTags(v.Tags, tags) {
+				kept = append(kept, v)
+				has[v.Origin] = true
+			}
+		}
+		st.Lookouts = kept
+		// A machine counts only for what it has under the tag: one out of
+		// contact with none of it is no part of this reading.
+		srcs := []SourceStatus{}
+		for _, src := range st.Sources {
+			if has[src.Name] {
+				srcs = append(srcs, src)
+			}
+		}
+		st.Sources = srcs
+	}
+	s := summarize(*st)
+	s.Board = berr == nil
+	if berr != nil && !errors.Is(berr, errNoBoard) {
+		s.BoardNote = berr.Error()
+	} else if berr != nil && isBoard(cfg.Board.Port) {
+		s.BoardNote = fmt.Sprintf("a board on port %d didn't prove it's yours, or was too busy to", cfg.Board.Port)
+	}
 	if tmpl != nil {
 		return tmpl.Execute(os.Stdout, s)
 	}
@@ -233,8 +271,17 @@ func swiftbar(s Summary, cfg *Config) string {
 			}
 		}
 	}
-	if key, err := boardKey(stateDir()); err == nil {
-		fmt.Fprintf(&b, "---\nOpen the board | href=%s\n", boardURL(cfg.Board.Port, key))
+	if !s.Board {
+		if s.BoardNote != "" {
+			b.WriteString("---\n" + swiftEscape("The board didn't answer ("+s.BoardNote+"): this reads every machine itself") + " | color=" + boardColor["waiting"] + "\n")
+		} else {
+			b.WriteString("---\nNo board is running: this reads every machine itself | color=" + boardColor["waiting"] + "\n")
+		}
+		b.WriteString("Start the board: firetower board --open | color=" + boardColor["waiting"] + "\n")
+	} else if u, err := onceURL(cfg.Board.Port); err == nil {
+		// A one-time address, as --open gives: the menu bar app hands its
+		// links to a browser's command line, which everyone can read.
+		fmt.Fprintf(&b, "---\nOpen the board | href=%s\n", u)
 	}
 	return b.String()
 }

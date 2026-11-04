@@ -140,6 +140,34 @@ fire, as a scheduler's stop would; `firetower done` or `rm` clears that.
 `rm` takes a lookout off the board, but a job still booked puts it back as a
 new watch on its next report: to end a watch, stand it down.
 
+### Tags
+
+A lookout can carry tags, words of your own: `--tag health` on `set`, `run`
+or `expect` (repeat it, or join words with commas). Give a report `--tag`
+and it carries exactly those; leave it out and it keeps what it had;
+`--tag none` clears them.
+
+A tag is for grouping the lookouts the way you think of them, across
+districts, towers and machines. A health lookout on every machine shows under
+one `#health` on the board's **By tag** view, and `firetower ls --tag health`
+or `firetower bar --tag health` reads just those.
+
+It's also how your own workflow hooks in. The Firetower does nothing with a
+tag by itself: it keeps it and shows it, and `ls`, `rm` and `gc --tag` are
+the handles for a script or a scheduler. A watch tagged `temporary`, gone
+once it's over:
+
+```sh
+firetower run deploy/web/rollout --tag temporary --until 2h -- ./check-rollout.sh
+crontinental every 1h --name tidy-temporary --forever --notify never -- firetower gc --tag temporary
+```
+
+`gc --tag temporary` forgets every stood-down lookout carrying the tag right
+away (plain `gc` waits a day); `rm --tag` removes them in any state. Both
+say on stderr when no lookout carries the tag at all, and when a file they
+couldn't read might have, and still exit 0: a tidy-up that finds nothing to
+do has done its job.
+
 ### All of it
 
 The commands, as `firetower help` lists them (it also explains names,
@@ -148,18 +176,26 @@ messages and times):
 ```
 firetower set NAME STATUS ["MESSAGE"] [--district D] [--tower T] [--label L]
               [--value V] [--next 30m|TIME|none] [--until 6h|TIME|none] [--link X] [--source S]
+              [--tag T]...
 firetower run NAME [the same flags but --value] [--message M] -- CMD ...
-firetower expect NAME [--next 30m] [--until 6h] [--district D] [--tower T] [--label L] [--link X] [--source S]
+firetower expect NAME [--next 30m] [--until 6h] [--district D] [--tower T] [--label L] [--link X]
+              [--source S] [--tag T]...
 
-firetower ls [--district D] [--tower T] [--all] [--json]
+firetower ls [--district D] [--tower T] [--tag T]... [--all] [--json]
 firetower seen NAME              acknowledge the current smoke or fire
 firetower done NAME ["MESSAGE"]  stand a watch down (it stays down until expect;
                                    with no MESSAGE it keeps what the watch last said)
-firetower rm NAME | --district D [--tower T]
-firetower gc                     forget lookouts stood down over a day ago
+firetower rm NAME | --district D [--tower T] | --tag T... [--district D] [--tower T]
+firetower gc [--tag T]...        forget lookouts stood down over a day ago
+                                   (with --tag: every stood-down one carrying it, now)
 
-firetower board [--port N] [--open] [--ui DIR] | firetower board --url
-firetower bar [--format plain|json|waybar|swiftbar|xbar] [--template T] [--timeout 8s]
+firetower board [--port N] [--ui DIR]   the board, here, until Ctrl-C (for a service)
+firetower board --open | --start | --stop | --url [--once]
+                                   open it in a window (starting it in the background if
+                                   it isn't up), only start it, stop it, or print its address
+                                   (--once: an address good for one browser, for a minute)
+firetower bar [--format plain|json|waybar|swiftbar|xbar] [--template T] [--tag T]...
+              [--timeout 8s]
 firetower watch --json [--once]  the feed boards read
 
 firetower upgrade [--check] | firetower version | firetower help
@@ -193,35 +229,51 @@ clean." or "Exited N.", and on a failure it adds "(exit N)".
 Everything a board needs is in the files and the feed, so you can build your
 own. You don't have to: two come with it, and each can be swapped out alone.
 
-**The window.** `firetower board --open` serves a small board on 127.0.0.1
-and opens it as an app window: districts as boxes, towers inside, a row per
-lookout with its dot, message and times. Click a lookout's name to open its
+**The board, at login.** The board is this machine's hub: it follows every
+other machine you list, holds the key and sends each button press to the
+machine it belongs to. The bar, a bar plugin and `firetower seen` on another
+machine's lookout all ask it first, so run it all the time: start it at login
+with `examples/board.plist` (macOS) or `examples/firetower-board.service`
+(Linux). Without one, `firetower board --open` (or `--start`, which only
+starts it) runs it in the background the first time it's needed, with its
+output added to `board.log` in the state folder. `firetower board --stop`
+stops your board, however it was started; one a service runs may be started
+again by the service, so stop that instead.
+
+**The window.** `firetower board --open` opens the board as an app window
+(or `$FIRETOWER_OPEN_WITH`, a command of your own that opens the address):
+districts as boxes, towers inside, a row per lookout with its dot, message
+and times. **By tag** groups them by tag instead, whatever their district or
+machine, and the tag list shows only one tag's; **Needs a look** is only what
+needs a look, worst first, the short list for a small window. The address
+keeps the choice (`?view=tag`, `?view=attention`, `?tag=health`), so a
+bookmark or a bar opens straight to it. Click a lookout's name to open its
 link (a URL, or a local log shown as plain text); on a phone, tap a row for
 its buttons (the ⋯). Seen, Stand down and Remove are buttons; Remove asks for
 a second press, and a stood-down row offers Watch again. Messages show in
 full. The tab title counts what needs a look, the same number the summary
 starts with.
-It follows your light or dark setting and works at phone width. To start it
-at login, see `examples/board.plist` (macOS) or
-`examples/firetower-board.service` (Linux).
+It follows your light or dark setting and works at phone width.
 
 **The bar.** `firetower bar` prints one line for whatever shows one on a
-timer:
+timer. With the board up it reads the board, so a refresh every few seconds
+costs one request on this machine; with none it dials every machine itself,
+each time, and says so (`"board": false` in `--format json`):
 
 - [SwiftBar](https://swiftbar.app) or xbar on macOS: `examples/firetower.30s.sh`
   puts binoculars in the menu bar, coloured by the worst state, with a menu
-  of every lookout.
+  of every lookout it shows.
 - Waybar: `examples/waybar.jsonc` and `waybar.css`.
 - Omarchy 4, whose bar is its own Quickshell shell: `examples/omarchy/firetower`
   is a bar plugin. Binoculars, with the count when something needs a look,
-  yellow on smoke and red on fire; a click opens
-  a panel with the summary, every lookout that isn't clear (smoke or fire on
-  this machine's own can be marked seen there), sources out of contact, and
-  the board, which it focuses if it's already open. Link the folder in and
-  turn it on:
-  `ln -s "$PWD/examples/omarchy/firetower" ~/.config/omarchy/plugins/firetower`,
-  then `omarchy-shell shell rescanPlugins` and
-  `omarchy-shell shell setPluginEnabled firetower true`. Fire is the theme's
+  yellow on smoke and red on fire, and nothing while there are no lookouts;
+  a click opens a panel with the summary, every lookout shown that isn't clear
+  (smoke or fire can be marked seen there, on any machine the board can
+  reach), sources out of contact, and the board, which it focuses if it's
+  already open. Copy the folder into Omarchy's plugins and turn it on
+  (copy it again after an upgrade):
+  `cp -R examples/omarchy/firetower ~/.config/omarchy/plugins/`, then
+  `omarchy plugin enable firetower`. Fire is the theme's
   red and smoke its yellow; a theme can choose its own in a `firetower.toml`
   (`fire`, `smoke`, `no_word`, as `"#rrggbb"`), and for a built-in theme that
   file goes in `~/.config/omarchy/themes/<theme>/`.
@@ -240,14 +292,21 @@ draw what you like.
 |---|---|
 | `GET /api/state` | every lookout the board shows (less any `hide`), as `ls --json` prints them, and the sources |
 | `GET /api/feed` | the same, as server-sent events, on every change |
-| `POST /api/seen`, `/api/done`, `/api/rm` | `{"id": "district/tower/name"}`, as JSON |
+| `POST /api/seen`, `/api/done`, `/api/rm`, `/api/expect` | `{"id": "district/tower/name"}` (or `source:district/tower/name`, which the board sends to that machine), as JSON |
 | `GET /api/link?id=…` | a local lookout's linked file, as plain text (the last 256 KB) |
 
 The board answers only to this machine, and only to whoever holds its key, a
 secret in the private state folder. Loopback answers anyone on the machine,
 so the key is what keeps a shared machine's other users out.
-`firetower board --open` (or `--url`) brings the key along once; the page
-keeps it in its own origin's storage and sends it with every request, as
+`firetower board --open` hands the window a one-time address (good once,
+for a minute), which the page trades for the key: the key never sits on a
+browser's command line, which everyone on the machine can read. Someone who
+reads the address there could still beat the window to it; when the window
+then arrives with a spent address, the board changes its key, so what they
+got stops working, and the page says to open it again.
+`firetower board --url` prints the address with the key itself, for a
+script; `--url --once` prints a one-time one. The page keeps the key in its
+own origin's storage and sends it with every request, as
 `Authorization: Bearer <key>` (or `?key=` on the feed and log links, which a
 browser opens without headers). A script does the same. There are no
 cookies: a browser would hand them to every other server on 127.0.0.1. Other
@@ -255,7 +314,18 @@ sites, other local servers and framed copies of the page are all turned
 away.
 
 A page of your own (`--ui`) gets the key the same way: the address it's
-opened with carries `?key=`.
+opened with carries `?key=`, or `?once=` to trade at `POST /api/claim`
+(`{"once": "…"}` gives `{"key": "…"}`, once).
+
+The bar and the CLI ask the board on `board.port` to prove it holds the key
+(`GET /api/proof?nonce=…`, which only the key can answer) before they send
+it, so a stranger who took the port while the board was down never sees the
+key, and isn't believed. A board started by hand on another `--port` isn't
+found by them; set `board.port` instead.
+
+A running board reads the config when it starts: after changing `hide`,
+`keep` or a source, restart it (`firetower board --stop`, then `--open`, or
+restart the service), or the bar and the board keep the old one.
 
 ### Other machines
 
@@ -274,7 +344,8 @@ A shared machine that reports for everyone on it can be trimmed to what's
 yours. A lookout shows unless its tower matches `hide`, and `keep` wins over
 `hide` (so `keep` alone does nothing). Patterns are shell globs (`*`, `?`,
 `[abc]`, `[!abc]`) against `district/tower`, or the tower alone with no `/`,
-on the names as that machine reports them, before any `district` folding:
+on that machine's own names (one that isn't a name shows, and matches, as
+`unnamed`), before any `district` folding:
 
 ```toml
 [[source]]
@@ -286,15 +357,28 @@ keep = ["inbox/alice"]   # ...except this one
 
 A hidden lookout is left out of everything on this board: the list, the bar,
 the counts, the colours, the API and the buttons. The same two settings under
-`[board]` trim this machine's own. It's what your board shows, not who may
+`[board]` trim this machine's own. A machine out of contact still shows as
+out of contact, even if every tower of its is hidden: silence never looks
+clear. It's what your board shows, not who may
 read what: `firetower ls` and `watch` still show everything. A pattern that
 could never match a name (a capital, a space, an empty side of the `/`) is an
 error like any other in the config: the board and the bar refuse to start
-until it's fixed. Reports still land in your `default_district` and
+until it's fixed (a board already running keeps the config it started
+with, and `seen`, `done` and `rm` on another machine's lookout still go
+through it; `--stop` still stops it). Reports still land in your `default_district` and
 `default_tower`, with a warning in their output, whatever the slip (a bad
 value, a wrong type, an unknown key). Only a file that isn't TOML at all, or
 a bad default itself, sends them to `main` instead; and `rm --tower` without
 `--district` then refuses rather than guess the district.
+
+Another machine's lookout is `source:district/tower/name`, as the boards show
+it. `firetower seen`, `done` and `rm` take that too: through the running
+board, or with none, straight through the source's `act` command, and a
+tower the source hides can't be reached either way. A message never goes
+along (`act` usually crosses a shell on the other machine), so `done` there
+keeps what the watch last said. Through the board, a lookout must be one
+the board has heard of; straight through `act`, the other machine says if
+there's no such lookout.
 
 A source that fails, or goes quiet for two minutes, is **out of contact**:
 its lookouts stay, marked, and the board keeps trying. It never looks clear.
