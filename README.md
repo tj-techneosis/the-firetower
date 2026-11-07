@@ -401,7 +401,9 @@ hide = ["main/heartbeats"]
 keep_tags = ["on-shared-box"]
 ```
 
-Tags come from the other machine's feed, and a lookout carries at most 16
+Tags come from the other machine's feed, which carries them from 0.3.0 on
+(an older machine sends none, so its lookouts have no tags to match), and a
+lookout carries at most 16
 (a feed's extra ones are dropped, the last in alphabetical order first).
 Without a board running, `seen`, `done` and `rm` on another machine's
 lookout are held to the same rules: where its tags decide, they ask that
