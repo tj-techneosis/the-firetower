@@ -55,7 +55,9 @@ class KeepOne(Remote):
 
     def test_bad_tag_patterns_refuse(self):
         for pat in ["a/b", "", "Staff", "-x", "a!b", "[!]", "a" * 65, "[._]*", "[!a-z0-9]x", "[]",
-                    "*" + "a" * 65, "a?" + "b" * 63, "[ab]" * 65, "a[z-a]", "a]*", "x[!-._a-z0-9]", "a^b"]:
+                    "*" + "a" * 65, "a?" + "b" * 63, "[ab]" * 65, "a[z-a]", "a]*",
+                    "x[!-._a-z0-9]",  # refused as not a pattern: Go allows no bare "-" in a class
+                    "a^b"]:
             for field in ("hide_tags", "keep_tags"):
                 with self.subTest(pat=pat, field=field):
                     self.write_config(name="shared", command=[*self.remote_cmd, "watch", "--json"], **{field: [pat]})
