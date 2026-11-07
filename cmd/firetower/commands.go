@@ -462,7 +462,15 @@ func cmdSeen(args []string) error {
 	if err != nil {
 		return err
 	}
-	return seen(d, t, n)
+	already, err := seen(d, t, n)
+	if already != nil && atTerminal() {
+		when := ago(already, now())
+		if already.After(now()) { // a clock that moved back
+			when = "at " + already.Local().Format("Jan 2 15:04")
+		}
+		fmt.Fprintf(os.Stderr, "firetower: %s/%s/%s was already seen %s, and keeps that time\n", d, t, n, when)
+	}
+	return err
 }
 
 // elsewhere: a NAME that is another machine's lookout, as the boards print
@@ -478,7 +486,11 @@ func noPlaceFlags(f flags) error {
 	return nil
 }
 
-func seen(d, t, n string) error {
+// seen acknowledges the current smoke or fire. One already seen keeps its
+// first time, and the time comes back so the command can say so (the board
+// and another machine's act just take it as done).
+func seen(d, t, n string) (*time.Time, error) {
+	var already *time.Time
 	_, err := update(d, t, n, false, func(l *Lookout, at time.Time) error {
 		v := view(l, at)
 		if v.State != "yellow" && v.State != "red" {
@@ -486,10 +498,14 @@ func seen(d, t, n string) error {
 				"stale": "it's gone quiet (seen covers a report, not a silence)", "waiting": "it hasn't reported yet"}[v.State]
 			return fmt.Errorf("nothing to acknowledge on %s: %s", l.ID(), what)
 		}
+		if v.Seen {
+			already = v.SeenAt // keep when it was first seen
+			return nil
+		}
 		l.Seen = &Seen{At: at, Status: l.Status, Value: l.Value}
 		return nil
 	})
-	return err
+	return already, err
 }
 
 func cmdDone(args []string) error {

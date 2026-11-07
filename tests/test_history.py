@@ -320,3 +320,18 @@ class UntilEdges(Firetower):
         self.ft("set", "x", "green", "fine")
         line = self.ft("history", "x").stdout.splitlines()[1]
         self.assertRegex(line, r"^[A-Z][a-z]{2} \d{1,2} \d{2}:\d{2} \(")
+
+
+class SmallFixes(Firetower):
+    def test_a_second_seen_keeps_the_first(self):
+        self.ft("set", "x", "red", "down")
+        self.ft("seen", "x")
+        first = self.one("main/main/x")["seen_at"]
+        self.clock = at(10)
+        p = self.ft("seen", "x", FIRETOWER_TERMINAL="1")
+        self.assertIn("already seen", p.stderr)
+        self.assertEqual(self.one("main/main/x")["seen_at"], first)
+
+    def test_run_hints_show_a_quiet_curl(self):
+        p = self.ft("run", "x", "curl", "-fsS", "https://example.com/", ok=False)
+        self.assertIn("curl -fsS -o /dev/null", p.stderr)

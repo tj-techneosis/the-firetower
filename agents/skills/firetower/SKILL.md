@@ -166,6 +166,7 @@ booked already (`crontinental list`):
 
 ```sh
 firetower run deploy/web/rollout --tag temporary --until 2h -- ./check-rollout.sh   # the booked line
+# Under Crontinental 0.10+, the job can carry them instead: crontinental … --tag firetower=temporary -- firetower run …
 crontinental every 1h --name tidy-temporary --forever --notify never -- firetower gc --tag temporary
 ```
 

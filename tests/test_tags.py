@@ -212,3 +212,62 @@ class FeedEdges(Firetower):
         vs = self.feed({"id": "inbox/bob/x", "district": "app", "tower": "web", "name": "x", "state": "red"},
                        {"id": "app/web/y", "district": "app", "tower": "web", "name": "y", "state": "green"})
         self.assertEqual(list(vs), ["m:app/web/y"])
+
+
+class JobTags(Firetower):
+    """Crontinental 0.10+ hands each run its job's tags; the firetower key is the lookout's."""
+
+    def job_run(self, *flags, tags=None, run_id="r1", ok=True, job="box-health"):
+        env = {"CRONTINENTAL_JOB": "box-health", "CRONTINENTAL_NEXT": "2026-10-31T12:30:00Z"}
+        if job is None:
+            del env["CRONTINENTAL_JOB"]
+        if run_id:
+            env["CRONTINENTAL_RUN"] = run_id
+        if tags is not None:
+            env["CRONTINENTAL_TAGS"] = tags
+        return self.ft("run", "a/b/x", *flags, "--", "true", ok=ok, **env)
+
+    def test_the_firetower_key_becomes_the_lookouts_tags(self):
+        self.job_run(tags=json.dumps({"firetower": "health,temporary", "topic": "ops"}))
+        self.assertEqual(self.one("a/b/x")["tags"], ["health", "temporary"])
+
+    def test_other_keys_are_the_schedulers(self):
+        self.job_run(tags=json.dumps({"topic": "ops"}))
+        self.assertNotIn("tags", self.one("a/b/x"))
+
+    def test_a_flag_wins(self):
+        self.job_run("--tag", "mine", tags=json.dumps({"firetower": "health"}))
+        self.assertEqual(self.one("a/b/x")["tags"], ["mine"])
+
+    def test_a_bad_value_is_said_and_the_check_still_reports(self):
+        p = self.job_run(tags=json.dumps({"firetower": "Bad Tag"}))
+        self.assertIn("ignoring CRONTINENTAL_TAGS' firetower tag", p.stderr)
+        self.assertEqual(self.one("a/b/x")["state"], "green")
+        p = self.job_run(tags="not json")
+        self.assertIn("ignoring CRONTINENTAL_TAGS", p.stderr)
+
+    def test_only_for_a_run_crontinental_started(self):
+        self.job_run(tags=json.dumps({"firetower": "health"}), run_id=None)
+        self.assertNotIn("tags", self.one("a/b/x"))
+
+    def test_other_keys_of_any_type_dont_drop_the_firetower_one(self):
+        self.job_run(tags=json.dumps({"firetower": "health", "count": 3, "nested": {"a": 1}}))
+        self.assertEqual(self.one("a/b/x")["tags"], ["health"])
+
+    def test_the_same_gate_as_the_source(self):
+        self.job_run(tags=json.dumps({"firetower": "health"}), job=None)
+        self.assertNotIn("tags", self.one("a/b/x"))
+
+    def test_an_empty_one_clears_the_tags(self):
+        self.ft("set", "a/b/x", "green", "--tag", "old")
+        self.job_run(tags=json.dumps({"firetower": ""}))
+        self.assertNotIn("tags", self.one("a/b/x"))
+
+    def test_its_errors_name_the_variable_and_stay_short(self):
+        p = self.job_run(tags=json.dumps({"firetower": "Bad " * 500}))
+        line = [l for l in p.stderr.splitlines() if "firetower tag" in l][0]
+        self.assertIn("CRONTINENTAL_TAGS", line)
+        self.assertNotIn("--tag", line)
+        self.assertLess(len(line), 300)
+        p = self.job_run(tags=json.dumps({"firetower": 7}))
+        self.assertIn("want words", p.stderr)

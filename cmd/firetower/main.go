@@ -68,7 +68,8 @@ scheduler's times, written down: the Firetower keeps no clock, and never
 times, schedules or kills anything. run takes them from $CRONTINENTAL_NEXT
 and $CRONTINENTAL_UNTIL when Crontinental sets them, and --source from its
 job (crontinental:<job>, for a run Crontinental started: it sets both
-$CRONTINENTAL_JOB and $CRONTINENTAL_RUN).
+$CRONTINENTAL_JOB and $CRONTINENTAL_RUN), and its tags from the job's own
+firetower tag (crontinental ... --tag firetower=health,temporary).
 
 bar and seen, done and rm on another machine's lookout ask the running board
 first (the one on board.port, once it proves it's yours), so they don't dial

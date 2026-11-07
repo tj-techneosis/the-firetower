@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -40,7 +41,7 @@ func cmdRun(args []string) error {
 			if len(flag) > 0 {
 				name = strings.TrimSuffix(flag[0], ":")
 			}
-			return badf(u, "unknown flag %s: is it the check's own? Put the check after --, like: firetower run NAME -- curl -fsS https://example.com/", name)
+			return badf(u, "unknown flag %s: is it the check's own? Put the check after --, like: firetower run NAME -- curl -fsS -o /dev/null https://example.com/", name)
 		}
 		return bad(u, err)
 	}
@@ -48,7 +49,7 @@ func cmdRun(args []string) error {
 	case len(f.pos) == 0:
 		return badf(u, "run needs a NAME, then -- and the check to run")
 	case !f.dash || len(f.rest) == 0:
-		return badf(u, "put the check after --, like: firetower run %s -- curl -fsS https://example.com/", f.pos[0])
+		return badf(u, "put the check after --, like: firetower run %s -- curl -fsS -o /dev/null https://example.com/", f.pos[0])
 	case len(f.pos) > 1:
 		return badf(u, "put the check after --: firetower run %s -- %s", f.pos[0], strings.Join(f.pos[1:], " "))
 	}
@@ -71,7 +72,7 @@ func cmdRun(args []string) error {
 		if v == "" {
 			// Run by Crontinental with no NEXT: it won't come round again
 			// (a one-off, a repeat's last run), so nothing more is promised.
-			if flag == "next" && os.Getenv("CRONTINENTAL_JOB") != "" {
+			if flag == "next" && os.Getenv("CRONTINENTAL_JOB") != "" && os.Getenv("CRONTINENTAL_RUN") != "" {
 				f.vals["next"] = "none"
 			}
 			continue
@@ -107,6 +108,36 @@ func cmdRun(args []string) error {
 	if job := os.Getenv("CRONTINENTAL_JOB"); job != "" && os.Getenv("CRONTINENTAL_RUN") != "" && !f.has("source") {
 		autoSource = cleanText("crontinental:"+job, 120)
 	}
+	// And its tags: Crontinental (0.10 on) hands each run its job's tags as
+	// $CRONTINENTAL_TAGS, a JSON object of key=value. One key is the
+	// tower's, "firetower", whose value is the lookout's tags, comma
+	// separated (--tag firetower=health,temporary on the job). Every other
+	// key is the scheduler's own and ignored. A --tag flag wins. A bad tag
+	// there is said and skipped: a scheduler's setting mustn't stop a check
+	// from reporting.
+	// The same gate as the source: a run Crontinental started sets both
+	// JOB and RUN. Only the firetower key is read; the others are the
+	// scheduler's, whatever they hold. An empty one clears the tags.
+	var jobTags []string
+	if raw := os.Getenv("CRONTINENTAL_TAGS"); raw != "" && os.Getenv("CRONTINENTAL_JOB") != "" && os.Getenv("CRONTINENTAL_RUN") != "" && !f.has("tag") {
+		var tags map[string]json.RawMessage
+		var v string
+		switch {
+		case json.Unmarshal([]byte(raw), &tags) != nil:
+			fmt.Fprintf(os.Stderr, "firetower: ignoring CRONTINENTAL_TAGS: want a JSON object\n")
+		case tags["firetower"] == nil:
+		case json.Unmarshal(tags["firetower"], &v) != nil:
+			fmt.Fprintf(os.Stderr, "firetower: ignoring CRONTINENTAL_TAGS' firetower tag: want words, like health,temporary\n")
+		case strings.TrimSpace(v) == "":
+			jobTags = []string{}
+		default:
+			if parsed, err := parseTags([]string{v}); err != nil {
+				fmt.Fprintf(os.Stderr, "firetower: ignoring CRONTINENTAL_TAGS' firetower tag %q: tags are lowercase words, comma separated, at most %d\n", cleanText(v, 80), maxTags)
+			} else {
+				jobTags = parsed
+			}
+		}
+	}
 	d, t, n, err := where(f.pos[0], f, false)
 	if err != nil {
 		return err
@@ -130,6 +161,9 @@ func cmdRun(args []string) error {
 			}
 			if autoSource != "" && l.Source == "" {
 				l.Source = autoSource
+			}
+			if jobTags != nil {
+				l.Tags = jobTags
 			}
 			if ended || !report(l, status, msg, value, at) {
 				// A stood-down watch is only noted as alive: nothing the

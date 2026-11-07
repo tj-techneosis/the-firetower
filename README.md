@@ -68,7 +68,7 @@ Four rules, from years of heartbeat checks that lied:
    "waiting", then "no word yet" once its `--next` has passed.
 4. **Seen is not fixed.** Acknowledging a smoke dims it until its status or
    value changes, so a known problem stops shouting and a new one gets
-   through.
+   through. Seeing it again keeps the first time it was seen.
 
 ## Reporting
 
@@ -184,6 +184,13 @@ once it's over:
 firetower run deploy/web/rollout --tag temporary --until 2h -- ./check-rollout.sh
 crontinental every 1h --name tidy-temporary --forever --notify never -- firetower gc --tag temporary
 ```
+
+Under Crontinental (0.10 and later), a job's own `firetower` tag gives its
+lookout tags with no flags on the run line: `crontinental every 10m --tag
+firetower=health,temporary -- firetower run …`. Each run replaces the
+lookout's tags with the job's, as a `--tag` would (an empty `firetower=`
+clears them). The job's other tags are Crontinental's, a `--tag` on the run
+line wins, and only `run` reads them, not `set`.
 
 `gc --tag temporary` forgets every stood-down lookout carrying the tag right
 away (plain `gc` waits a day); `rm --tag` removes them in any state. Both

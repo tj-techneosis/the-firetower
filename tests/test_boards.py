@@ -505,3 +505,14 @@ class CustomUI(Firetower):
 
     def test_ui_needs_an_index(self):
         self.ft("board", "--ui", str(self.tmp), "--port", str(free_port()), ok=False)
+
+
+class SeenTwice(Remote):
+    def test_a_second_seen_through_the_board_keeps_the_first(self):
+        self.ft("set", "a/b/x", "red", "down")
+        req = self.start_board()
+        self.assertEqual(req("POST", "/api/seen", {"id": "a/b/x"})[0], 200)
+        first = self.one("a/b/x")["seen_at"]
+        time.sleep(1.1)
+        self.assertEqual(req("POST", "/api/seen", {"id": "a/b/x"})[0], 200)
+        self.assertEqual(self.one("a/b/x")["seen_at"], first)

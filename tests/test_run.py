@@ -199,9 +199,11 @@ class Run(Firetower):
 
     def test_no_next_from_the_scheduler_means_no_promise(self):
         # A one-off, or a repeat on its last run: Crontinental leaves NEXT unset.
-        self.run_check("true", CRONTINENTAL_JOB="w", CRONTINENTAL_NEXT="2026-10-31T12:10:00+00:00")
+        self.run_check("true", CRONTINENTAL_JOB="w", CRONTINENTAL_RUN="1", CRONTINENTAL_NEXT="2026-10-31T12:10:00+00:00")
         self.assertIn("next_by", self.file("main/main/chk"))
-        self.run_check("true", CRONTINENTAL_JOB="w")  # its last run
+        self.run_check("true", CRONTINENTAL_JOB="w")  # a shell with JOB left exported: not a run, so the promise stands
+        self.assertIn("next_by", self.file("main/main/chk"))
+        self.run_check("true", CRONTINENTAL_JOB="w", CRONTINENTAL_RUN="2")  # its last run
         self.assertNotIn("next_by", self.file("main/main/chk"))
         self.assertEqual(self.one("main/main/chk", FIRETOWER_NOW=at(60 * 24))["state"], "green")
 

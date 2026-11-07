@@ -430,7 +430,7 @@ func (p *post) act(verb, id string) error {
 		var err error
 		switch verb {
 		case "seen":
-			err = seen(parts[0], parts[1], parts[2])
+			_, err = seen(parts[0], parts[1], parts[2])
 		case "done":
 			err = done(parts[0], parts[1], parts[2], "")
 		case "rm":

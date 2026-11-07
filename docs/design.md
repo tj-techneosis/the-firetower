@@ -179,7 +179,11 @@ Each lookout is one file, `<dir>/<district>/<tower>/<name>.json`, where `<dir>` 
   Crontinental, from `$CRONTINENTAL_JOB`; a flag wins.
 - `tags` are words of the person's own (`--tag`, names like every other
   name, at most 16, kept sorted): a report that gives `--tag` carries exactly
-  those, one that leaves it out keeps them, `--tag none` clears them. They're
+  those, one that leaves it out keeps them, `--tag none` clears them. Under
+  Crontinental (0.10+), `run` also takes them from the job's own `firetower`
+  tag (`--tag firetower=health,temporary` on the job), which replaces the
+  lookout's tags the way a `--tag` would; a `--tag` on the run line wins, and
+  `set` never reads the job's. They're
   for grouping across districts, towers and machines (the board's By tag
   view, `ls`/`bar --tag`) and for a person's own workflow to act on (`ls`,
   `rm` and `gc --tag`). The Firetower does nothing with a tag by itself:
