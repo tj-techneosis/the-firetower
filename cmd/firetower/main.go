@@ -23,6 +23,8 @@ Report (what checks run):
 
 Look after them:
   firetower ls [--district D] [--tower T] [--tag T]... [--all] [--json]
+  firetower history NAME [--since 7d] [--json]
+                                   how it got here: its last 50 changes of status
   firetower seen NAME              acknowledge the current smoke or fire
   firetower done NAME ["MESSAGE"]  stand a watch down (it stays down until expect;
                                    with no MESSAGE it keeps what the watch last said)
@@ -64,7 +66,9 @@ clock time (23:59, "tomorrow 07:00"), a date (through that day), a full time
 counts from when the watch was booked, not from each run. They are the
 scheduler's times, written down: the Firetower keeps no clock, and never
 times, schedules or kills anything. run takes them from $CRONTINENTAL_NEXT
-and $CRONTINENTAL_UNTIL when Crontinental sets them.
+and $CRONTINENTAL_UNTIL when Crontinental sets them, and --source from its
+job (crontinental:<job>, for a run Crontinental started: it sets both
+$CRONTINENTAL_JOB and $CRONTINENTAL_RUN).
 
 bar and seen, done and rm on another machine's lookout ask the running board
 first (the one on board.port, once it proves it's yours), so they don't dial
@@ -132,6 +136,8 @@ func main() {
 		err = cmdRm(args)
 	case "ls", "list":
 		err = cmdLs(args)
+	case "history":
+		err = cmdHistory(args)
 	case "gc":
 		err = cmdGc(args)
 	case "watch":

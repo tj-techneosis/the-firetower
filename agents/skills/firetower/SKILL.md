@@ -35,7 +35,9 @@ Never keep this session open (or loop) to watch something. Book a check.
    What `expect` sets (label, link, until) stays: later reports that leave a
    flag out keep it. Its `--next` holds until the first report, which makes
    its own promise (under Crontinental, `run` does that for you). In a
-   booked command, use the full `district/tower/name`.
+   booked command, use the full `district/tower/name`, and say who reports
+   with `--source` (`cron:nightly-backup`, `launchd:site-up`) so a board
+   never has to guess it from names. Under Crontinental, `run` fills it in.
 4. **Book it** with whatever scheduler this machine has (below). The
    scheduler owns the timing. Under Crontinental, `firetower run` picks up
    when the next report is due and when the watch ends by itself; under
@@ -173,6 +175,7 @@ crontinental every 1h --name tidy-temporary --forever --notify never -- firetowe
 firetower ls                  every lookout: state, id, when it checked, message
 firetower ls --json           the same with every field (label, next_by, until, link, tags…), for a script
 firetower ls --tag health     only what carries a tag
+firetower history NAME        how it got here: its last 50 changes of status
 firetower bar                 one line: "1 fire · 2 smoke · 9 clear"
 firetower board --open        the board, in a window
 firetower seen NAME           acknowledge a smoke or fire (dims until it changes)

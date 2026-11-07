@@ -198,8 +198,19 @@ class StandDown(Firetower):
             self.ft("set", "x", "green", "--next", "3h", "--until", "6h")
         self.assertEqual(self.one("main/main/x", FIRETOWER_NOW=at(365))["state"], "done")
         self.clock = at(370)
-        self.ft("set", "x", "green", "--until", "2026-10-31T20:00:00Z")  # a time always applies
+        # Once it's over, a report's own time doesn't bring it back (stood
+        # down sticks, however it happened); booking it again does.
+        self.ft("set", "x", "green", "--until", "2026-10-31T20:00:00Z")
+        self.assertEqual(self.one("main/main/x")["state"], "done")
+        self.ft("expect", "x", "--until", "2026-10-31T20:00:00Z")
+        self.ft("set", "x", "green")
         self.assertEqual(self.one("main/main/x")["state"], "green")
+
+    def test_a_later_time_moves_the_end_of_a_watch_still_on(self):
+        self.ft("set", "x", "green", "--until", "6h")
+        self.clock = at(60)
+        self.ft("set", "x", "green", "--until", "2026-10-31T20:00:00Z")  # a time always applies, while it's on
+        self.assertEqual(self.one("main/main/x", FIRETOWER_NOW=at(420))["state"], "green")
 
     def test_a_watch_past_until_doesnt_come_back(self):
         # A job nobody unbooked keeps reporting: tidying up must not delete

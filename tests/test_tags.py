@@ -111,7 +111,7 @@ class RemoteTags(Firetower):
         feed = "\n".join([
             json.dumps({"type": "hello", "v": 1}),
             json.dumps({"type": "lookout", "lookout": {"id": "c/d/y", "district": "c", "tower": "d", "name": "y",
-                                                       "state": "green", "tags": ["ok", "Bad", "../x", "ok", "‮"],
+                                                       "state": "green", "tags": ["ok", "Bad", "../x", "ok", "\u202e"],
                                                        "home_district": "forged"}}),
             json.dumps({"type": "sync", "ids": ["c/d/y"]}),
         ])

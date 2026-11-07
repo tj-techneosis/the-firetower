@@ -32,10 +32,15 @@ func cmdRun(args []string) error {
 			}
 		}
 		switch {
-		case strings.HasPrefix(err.Error(), "unknown flag -m"):
+		case strings.HasPrefix(err.Error(), "unknown flag -m") && hasDash:
 			return badf(u, "unknown flag -m: run's message flag is --message")
 		case strings.HasPrefix(err.Error(), "unknown flag") && !hasDash:
-			return badf(u, "%v: is that the check's own flag? Put the check after --, like: firetower run NAME -- curl -fsS https://example.com/", err)
+			flag := strings.Fields(strings.TrimPrefix(err.Error(), "unknown flag "))
+			name := "that"
+			if len(flag) > 0 {
+				name = strings.TrimSuffix(flag[0], ":")
+			}
+			return badf(u, "unknown flag %s: is it the check's own? Put the check after --, like: firetower run NAME -- curl -fsS https://example.com/", name)
 		}
 		return bad(u, err)
 	}
@@ -92,6 +97,16 @@ func cmdRun(args []string) error {
 		v = t.UTC().Format(time.RFC3339)
 		f.vals[flag] = v
 	}
+	// Who feeds the watch: under Crontinental, its job, so a board can say
+	// "fed by crontinental:box-health" without matching names. A flag wins.
+	// Both JOB and RUN, as Crontinental sets them for a run: a shell that
+	// merely has JOB exported (from testing a job by hand) isn't one.
+	// And only when the watch has no source yet: one booked with expect
+	// --source keeps it.
+	autoSource := ""
+	if job := os.Getenv("CRONTINENTAL_JOB"); job != "" && os.Getenv("CRONTINENTAL_RUN") != "" && !f.has("source") {
+		autoSource = cleanText("crontinental:"+job, 120)
+	}
 	d, t, n, err := where(f.pos[0], f, false)
 	if err != nil {
 		return err
@@ -108,12 +123,19 @@ func cmdRun(args []string) error {
 	// a normal exit: "Can't run" and "Stopped" always say so.
 	rep := func(status, msg string, value *string) error {
 		_, err := update(d, t, n, true, func(l *Lookout, at time.Time) error {
-			tags := l.Tags
+			prev := *l
+			ended := endedByUntil(view(l, at))
 			if err := applyCommon(l, f, at, false); err != nil {
 				return err
 			}
-			if !report(l, status, msg, value, at) {
-				l.Tags = tags // a stood-down watch is only noted as alive: its tags stay what they were
+			if autoSource != "" && l.Source == "" {
+				l.Source = autoSource
+			}
+			if ended || !report(l, status, msg, value, at) {
+				// A stood-down watch is only noted as alive: nothing the
+				// report carried (tags, label, times) lands on it.
+				*l = prev
+				l.CheckedAt = tp(at)
 				stoodDown(l.ID())
 			} else if view(l, at).State == "done" {
 				stoodDown(l.ID())

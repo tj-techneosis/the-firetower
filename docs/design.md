@@ -159,6 +159,24 @@ Each lookout is one file, `<dir>/<district>/<tower>/<name>.json`, where `<dir>` 
   hour, so nobody has to book `gc`.
 - `link` is what a click opens (a URL, a file, or a log). `source` is free text
   shown on hover: who reports.
+- `history` is the lookout's last 50 changes of status, as they landed: one
+  entry (`at`, `status`, `message`, `value`) each time a report's status
+  differs from the last move, a stand-down included (dated when it took
+  effect, so one past its `until` says then), and a `waiting` entry when
+  `expect` books an ended watch again. A file from before 0.4.0 starts its
+  history at its current status. A file anyone wrote may hold anything
+  under `history`: whatever isn't a move is dropped, never the lookout, and
+  every write and read tidies it the same way (known statuses, no times
+  from the future, time order, the newest 50). It's for a board that draws
+  how a watch got where it is (a timeline, a time-lapse) without remembering
+  the past itself. It's written on the same writes as everything else, so it
+  keeps no clock. No word isn't an entry: readers work it out from
+  `next_by`, and in a history it's the gap between reports. `firetower
+  history NAME [--since 7d] [--json]` reads it. It stays out of `ls` and the
+  feed, which carry only now, so boards don't get heavier.
+- `source` says who reports (`crontinental:deploy-landed`, `cron:nightly`), so
+  a board can say "fed by …" without matching names. `run` fills it in under
+  Crontinental, from `$CRONTINENTAL_JOB`; a flag wins.
 - `tags` are words of the person's own (`--tag`, names like every other
   name, at most 16, kept sorted): a report that gives `--tag` carries exactly
   those, one that leaves it out keeps them, `--tag none` clears them. They're
@@ -168,8 +186,8 @@ Each lookout is one file, `<dir>/<district>/<tower>/<name>.json`, where `<dir>` 
   "tear down what's tagged temporary once it's over" is a scheduled `gc
   --tag temporary` the person books, never a rule inside the tool. The feed
   carries them, so another machine's lookouts group the same way.
-- The Firetower owns `moved_at`, `last_clear_at`, `status_since` and `seen`
-  (when reports landed, never timers);
+- The Firetower owns `moved_at`, `last_clear_at`, `status_since`, `seen` and
+  `history` (when reports landed, never timers);
   checks never write them. A `set` that leaves a flag out keeps that field
   (label, link, source); status and message are always the new report's.
 - Label and message are one line of plain text: newlines become spaces,
@@ -319,9 +337,11 @@ connection the proof came back on. A running board reads its config once,
 at start.
 
 The waits, and why: a board on loopback answers in milliseconds, so it gets
-half a second to prove itself (one that can't is busy or isn't ours, and
-the bar dials the sources instead, so a stranger that hangs costs a refresh
-half a second), and two seconds for `/api/state`. A background start gets
+half a second to prove itself to the bar and the CLI (one that can't is busy
+or isn't ours, and the bar dials the sources instead, so a stranger that
+hangs costs a refresh half a second), two seconds for `/api/state`, and two
+seconds to prove itself to `--stop`, which would rather wait than leave a
+busy board running. A background start gets
 five seconds to answer before the command says so (the board may still be
 starting; its output is in `board.log`), and `--stop` five seconds for the
 board to go. None of these times anything the person booked: they're how

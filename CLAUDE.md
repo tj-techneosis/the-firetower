@@ -40,10 +40,10 @@ Claude Code setup.
   read them. Fields are added, never renamed or repurposed; unknown fields in
   a file are kept. A breaking feed change bumps `feedVersion`.
 - **The Firetower owns** `moved_at`, `last_clear_at`, `status_since`,
-  and `seen`. Tags are the person's: the Firetower keeps and
-  shows them and acts on one only when told to (`rm`/`gc --tag`), never by a
-  rule of its own. Checks never write them, and every write goes
-  through `update` (the lock, then read-change-write).
+  `seen` and `history`. Checks never write them, and every write goes
+  through `update` (the lock, then read-change-write). Tags are the
+  person's: the Firetower keeps and shows them and acts on one only when
+  told to (`rm`/`gc --tag`), never by a rule of its own.
 - **No clock.** The scheduler owns every time: how often a check runs, how
   long it may, when the watch ends. The Firetower never times, schedules or
   kills anything. A report carries two of the scheduler's times, `next_by`

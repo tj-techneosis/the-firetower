@@ -160,6 +160,8 @@ func update(district, tower, name string, create bool, change func(l *Lookout, a
 	if err := change(l, at); err != nil {
 		return nil, err
 	}
+	// Every write leaves the history tidy, whatever path it took.
+	l.History = tidyMoves(l.History, at)
 	if err := saveLookout(dir, l); err != nil {
 		return nil, fmt.Errorf("can't write %s: %v", path, err)
 	}
@@ -246,6 +248,18 @@ func report(l *Lookout, status, message string, value *string, at time.Time) boo
 	if l.Status == "done" && status != "done" {
 		l.CheckedAt = tp(at)
 		return false
+	}
+	// A watch already over by its --until (even one whose end had passed
+	// at its first report) is what ls and the board call stood down, so a
+	// report to it is no move: its history ends at the until (readers add
+	// that end, as they work it out for ls). Otherwise a move is recorded
+	// whenever the status differs from the last move's.
+	if v := view(l, at); !(v.State == "done" && v.DoneBy == "until" && status != "done") {
+		m := Move{At: at, Status: status, Message: message, Value: l.Value}
+		if value != nil {
+			m.Value = *value
+		}
+		l.addMove(m, at) // before the status changes, so an old file's history starts from its old status
 	}
 	if l.Status != status || l.CheckedAt == nil {
 		l.StatusSince = tp(at)
@@ -351,12 +365,23 @@ func cmdSet(args []string) error {
 		return err
 	}
 	_, err = update(d, t, n, true, func(l *Lookout, at time.Time) error {
-		tags := l.Tags
+		prev := *l
+		before := view(l, at)
 		if err := applyCommon(l, f, at, false); err != nil {
 			return err
 		}
-		if !report(l, status, msg, f.str("value"), at) {
-			l.Tags = tags // a stood-down watch is only noted as alive: its tags stay what they were
+		ok := status == "done" || !endedByUntil(before)
+		if ok {
+			ok = report(l, status, msg, f.str("value"), at)
+		}
+		if status == "done" {
+			backdateStandDown(l, before) // the same as `firetower done`
+		}
+		if !ok {
+			// A stood-down watch is only noted as alive: nothing the
+			// report carried (tags, label, times) lands on it.
+			*l = prev
+			l.CheckedAt = tp(at)
 			stoodDown(l.ID())
 		} else if status != "done" && view(l, at).State == "done" {
 			stoodDown(l.ID())
@@ -387,13 +412,25 @@ func cmdExpect(args []string) error {
 		return err
 	}
 	_, err = update(d, t, n, true, func(l *Lookout, at time.Time) error {
+		defer func() {
+			// Only a watch left with no promise at all waits for good.
+			if l.NextBy == nil && l.CheckedAt == nil && !f.has("next") && atTerminal() {
+				fmt.Fprintf(os.Stderr, "firetower: no --next, so it waits for its first report for good; give --next for it to show no word if that never comes\n")
+			}
+		}()
 		// Expecting is booking. A watch that was over (stood down, or past
 		// its until) starts again, waiting for its first report.
-		over := l.Name != "" && view(l, at).State == "done"
+		v := view(l, at) // how it stands before this booking changes its times
+		over := l.Name != "" && v.State == "done"
 		if err := applyCommon(l, f, at, true); err != nil {
 			return err
 		}
 		if over {
+			// Its history says how it ended, then that it was booked again.
+			if l.Status != "done" && v.DoneAt != nil {
+				l.addMove(Move{At: *v.DoneAt, Status: "done", Message: "its --until passed"}, at)
+			}
+			l.addMove(Move{At: at, Status: "waiting", Message: "booked again"}, at)
 			l.Status, l.Message, l.Value, l.Seen = "", "", "", nil
 			l.CheckedAt, l.StatusSince, l.MovedAt = nil, nil, nil
 			// The old end is over; one given now stands, even if past.
@@ -489,6 +526,21 @@ func cmdDone(args []string) error {
 	return done(d, t, n, msg)
 }
 
+// endedByUntil: a watch over because its --until passed. A report to one is
+// only a sign of life, like one to a watch stood down by hand: its own
+// times can't revive it (only expect books it again).
+func endedByUntil(v View) bool { return v.State == "done" && v.DoneBy == "until" }
+
+// backdateStandDown: a watch whose end had already passed (v, from before
+// the report) was stood down then, not now. Its status_since and its
+// history say so, as ls and the board already do.
+func backdateStandDown(l *Lookout, v View) {
+	if v.State == "done" && v.DoneAt != nil {
+		l.StatusSince = v.DoneAt
+		l.backdateMove("done", *v.DoneAt)
+	}
+}
+
 func done(d, t, n, msg string) error {
 	_, err := update(d, t, n, false, func(l *Lookout, at time.Time) error {
 		// With no message of its own, a stand-down keeps what the watch
@@ -500,9 +552,7 @@ func done(d, t, n, msg string) error {
 		// standing it down again mustn't put it back on the board for a day.
 		v := view(l, at)
 		report(l, "done", msg, nil, at)
-		if v.State == "done" && v.DoneAt != nil {
-			l.StatusSince = v.DoneAt
-		}
+		backdateStandDown(l, v)
 		return nil
 	})
 	return err
@@ -961,4 +1011,90 @@ func sortViews(vs []View) {
 		}
 		return a.ID < b.ID
 	})
+}
+
+// cmdHistory prints a lookout's moves: each change of status as it landed,
+// oldest first, so a person or a board can see how it got where it is.
+func cmdHistory(args []string) error {
+	const u = "history NAME [--since 7d] [--json] [--district D] [--tower T]"
+	f, err := parseFlags(args, map[string]bool{"since": true, "json": false, "district": true, "tower": true}, false)
+	if err != nil {
+		return bad(u, err)
+	}
+	if len(f.pos) != 1 {
+		return badf(u, "history takes one NAME")
+	}
+	if elsewhere(f.pos[0]) {
+		return fmt.Errorf("history is kept with the lookout's own files: run firetower history on the machine it's on")
+	}
+	var since time.Time
+	if f.has("since") {
+		span, err := parseSpan(f.get("since"))
+		if err != nil || span <= 0 {
+			return badf(u, "--since %q: want a span like 7d", f.get("since"))
+		}
+		since = now().Add(-span)
+	}
+	d, t, n, err := where(f.pos[0], f, true)
+	if err != nil {
+		return err
+	}
+	l, err := loadLookout(lookoutPath(stateDir(), d, t, n))
+	if err != nil {
+		return fmt.Errorf("can't read the report for %s/%s/%s: %v (firetower rm removes it, and the next report replaces it)", d, t, n, err)
+	}
+	moves := cleanMoves(historyAsRead(l, now()), since)
+	if f.has("json") {
+		b, _ := json.MarshalIndent(moves, "", "  ")
+		fmt.Println(string(b))
+		return nil
+	}
+	if len(moves) == 0 {
+		fmt.Printf("No changes recorded for %s%s.\n", l.ID(), map[bool]string{true: " in that time"}[f.has("since")])
+		return nil
+	}
+	at := now()
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "WHEN\tSTATUS\tMESSAGE")
+	for _, m := range moves {
+		msg := m.Message
+		if m.Value != "" {
+			msg = strings.TrimSpace(msg + " (" + m.Value + ")")
+		}
+		fmt.Fprintf(w, "%s (%s)\t%s\t%s\n", m.At.Local().Format("Jan 2 15:04"), ago(tp(m.At), at), m.Status, msg)
+	}
+	return w.Flush()
+}
+
+// historyAsRead is a lookout's history as a reader sees it: caught up to
+// where the lookout is (one from before 0.4 starts at its current status),
+// and, for a watch over by its --until, ending there with "done", as ls and
+// the board show it.
+func historyAsRead(l *Lookout, at time.Time) []Move {
+	l.startHistory(at)
+	v := view(l, at)
+	if v.State != "done" || v.DoneBy != "until" || v.DoneAt == nil {
+		return l.History
+	}
+	out := []Move{}
+	for _, m := range l.History {
+		if !m.At.After(*v.DoneAt) {
+			out = append(out, m)
+		}
+	}
+	if n := len(out); n == 0 || out[n-1].Status != "done" {
+		out = append(out, Move{At: v.DoneAt.UTC(), Status: "done", Message: "its --until passed"})
+	}
+	return out
+}
+
+// cleanMoves is a history to show: tidied as on writing, from since on.
+func cleanMoves(in []Move, since time.Time) []Move {
+	out := []Move{}
+	for _, m := range tidyMoves(in, now()) {
+		if !m.At.Before(since) {
+			out = append(out, m)
+		}
+	}
+	return out
 }

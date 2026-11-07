@@ -108,13 +108,16 @@ crontinental every 10m --until "5 hours" --name site-up --notify never -- \
 time (`23:59`, the next one; `tomorrow 07:00`), a date (`2026-11-01`, meaning
 through that day), a full time (`2026-11-01 06:00`, read in this machine's time zone unless it gives its own,
 as Crontinental's do), or `none` to clear it. Units are `s`, `m`, `h`, `d`,
-`w` and their words (`hrs`, `days`); Go's single letters are case-sensitive,
-so `30M` is refused rather than guessed.
+`w` and their words (`hrs`, `days`). A capital `S`, `M` or `H` is refused
+rather than guessed (`30M`: minutes, or months?), and the error says to
+write it in lowercase; `2D` and `2W` read as days and weeks.
 A time already past is accepted, and said so on stderr. For `--until`, a
 span or a clock time counts from when the watch was booked (`expect`, or its
 first report), not from each run: a booking that repeats `--until 6h` every
-run still ends six hours after it began. To move the end, `expect` it again
-with a new `--until`, or give a later date or full time.
+run still ends six hours after it began. To move the end of a watch still
+on, `expect` it again with a new `--until`, or give a later date or full
+time. Once it's over, only `expect` books it again: a report's own times
+don't bring it back.
 
 Under Crontinental (0.8 and later) `run` needs neither: Crontinental hands
 each run its next start time and its end (`$CRONTINENTAL_NEXT`,
@@ -139,6 +142,26 @@ books it again. Stopping a hand-run `firetower run` with Ctrl-C reports it as
 fire, as a scheduler's stop would; `firetower done` or `rm` clears that.
 `rm` takes a lookout off the board, but a job still booked puts it back as a
 new watch on its next report: to end a watch, stand it down.
+
+### Who reports, and how it got here
+
+`--source` says who feeds a watch, so whoever reads the board doesn't have
+to guess from names: `firetower set backup/nightly/db green "Backed up." --source
+cron:nightly-backup`. Under Crontinental, `run` fills it in from the job's
+name (`crontinental:<job>`) by itself, for a run Crontinental started (it
+sets both `$CRONTINENTAL_JOB` and `$CRONTINENTAL_RUN`), and only when the
+watch has no source yet. `firetower ls --json` carries it as
+`source`, and the board shows it on hover.
+
+Each lookout also keeps its last 50 changes of status: every time a report's
+status differs from the last, the Firetower notes when, the status and what
+the check said. `firetower history NAME` shows them, `--since 7d` only
+recent ones, and `--json` gives them to a board drawing a timeline. A report
+that didn't come isn't an entry; it's the gap between two. A stand-down is
+dated when it took effect (an `--until` that passed shows then, not when
+someone stood it down), booking a watch again with `expect` shows as
+"waiting, booked again", and a watch from before 0.4.0 starts its history at
+its current status.
 
 ### Tags
 
@@ -182,6 +205,8 @@ firetower expect NAME [--next 30m] [--until 6h] [--district D] [--tower T] [--la
               [--source S] [--tag T]...
 
 firetower ls [--district D] [--tower T] [--tag T]... [--all] [--json]
+firetower history NAME [--since 7d] [--json]
+                                   how it got here: its last 50 changes of status
 firetower seen NAME              acknowledge the current smoke or fire
 firetower done NAME ["MESSAGE"]  stand a watch down (it stays down until expect;
                                    with no MESSAGE it keeps what the watch last said)

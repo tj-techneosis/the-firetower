@@ -540,7 +540,7 @@ func startBoard(port int, key string, f flags) error {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	return fmt.Errorf("the board didn't answer within 5s; it may still be starting (pid %d, its output in %s)", cmd.Process.Pid, logPath)
+	return fmt.Errorf("the board didn't answer in about 5s; it may still be starting (pid %d, its output in %s)", cmd.Process.Pid, logPath)
 }
 
 // logTail is the last line this start's board wrote (from where its log
@@ -556,6 +556,9 @@ func logTail(path string, from int64, err error) string {
 	if len(lines) > 0 && lines[len(lines)-1] != "" {
 		return cleanText(lines[len(lines)-1], maxText)
 	}
+	if err == nil {
+		return "it stopped without saying why; another start may have won the port, so try again"
+	}
 	return fmt.Sprint(err)
 }
 
@@ -565,7 +568,8 @@ func logTail(path string, from int64, err error) string {
 // at most: a board that takes longer to stop is stuck, and it says so.
 func stopBoard(port int) error {
 	key := savedBoardKey(stateDir())
-	if key == "" || !ourBoard(port, key) {
+	// A stop gets longer than a bar to hear back: a busy board is still ours.
+	if key == "" || !proveBoard(port, key, boardAsk) {
 		if isBoard(port) {
 			return fmt.Errorf("the board on port %d didn't prove it's yours (another person's, or one from another state dir), so it can't be stopped from here", port)
 		}
@@ -573,7 +577,7 @@ func stopBoard(port int) error {
 		return nil
 	}
 	cfg := &Config{Board: Board{Port: port}}
-	resp, err := boardRequest(cfg, "GET", "/api/whoami", nil)
+	resp, err := boardRequestProving(cfg, "GET", "/api/whoami", nil, boardAsk)
 	if errors.Is(err, errNoBoard) {
 		fmt.Println("No board is running.") // it went while we asked
 		return nil
@@ -607,7 +611,7 @@ func stopBoard(port int) error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return fmt.Errorf("the board (pid %d) didn't stop within 5s", who.Pid)
+	return fmt.Errorf("the board (pid %d) didn't stop in about 5s", who.Pid)
 }
 
 // openWindow opens the board as an app window (a browser window with no

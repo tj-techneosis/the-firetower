@@ -38,8 +38,120 @@ type Lookout struct {
 	Link        string     `json:"link,omitempty"`
 	Source      string     `json:"source,omitempty"`
 	Tags        tagList    `json:"tags,omitempty"`
+	History     moveList   `json:"history,omitempty"`
 
 	extra map[string]json.RawMessage
+}
+
+// A Move is one change of status, as it landed: the Firetower writes one
+// whenever a report's status differs from the last, and keeps the latest
+// maxMoves, so a board can draw how a watch got where it is without
+// remembering the past itself. No word isn't a move: it's worked out by
+// readers from next_by, and shows in a history as the gap between reports.
+type Move struct {
+	At      time.Time `json:"at"`
+	Status  string    `json:"status"`
+	Message string    `json:"message,omitempty"`
+	Value   string    `json:"value,omitempty"`
+}
+
+const maxMoves = 50
+
+// moveStatuses are what a move can be: the four a report gives, and
+// "waiting" for a watch booked again with expect.
+var moveStatuses = map[string]bool{"green": true, "yellow": true, "red": true, "done": true, "waiting": true}
+
+// moveList is a history as JSON reads it. A file anyone wrote may hold
+// anything there; a wrong shape must never make the lookout itself
+// unreadable (and the next report replace it), so whatever isn't a move is
+// left out, and tidyMoves holds the rest to what a move is.
+type moveList []Move
+
+func (ml *moveList) UnmarshalJSON(b []byte) error {
+	var raw []json.RawMessage
+	if json.Unmarshal(b, &raw) != nil {
+		*ml = nil
+		return nil
+	}
+	out := moveList{}
+	for _, r := range raw {
+		var m Move
+		if json.Unmarshal(r, &m) == nil {
+			out = append(out, m)
+		}
+	}
+	*ml = out
+	return nil
+}
+
+// tidyMoves holds a history to what a move is: a known status, a time
+// that's come (none from the future), clean one-line text, in time order,
+// at most maxMoves (the newest). It's the one trim, on writing and on
+// reading alike.
+func tidyMoves(in []Move, now time.Time) moveList {
+	out := moveList{}
+	for _, m := range in {
+		if !moveStatuses[m.Status] || m.At.IsZero() {
+			continue
+		}
+		// A time ahead of now (a clock that stepped back, or a planted
+		// entry) is kept, as now: never lost, and never ahead of what's
+		// recorded next.
+		if m.At.After(now) {
+			m.At = now
+		}
+		m.At = m.At.UTC()
+		m.Message, m.Value = cleanText(m.Message, maxText), cleanText(m.Value, maxText)
+		out = append(out, m)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
+	if len(out) > maxMoves {
+		out = append(moveList{}, out[len(out)-maxMoves:]...)
+	}
+	return out
+}
+
+// startHistory brings a lookout's history up to where the lookout is: one
+// from before history (0.3 and earlier) starts at its current status, and
+// one an older version wrote to since (its status changed with no move)
+// gets that status as a move, from when it began.
+func (l *Lookout) startHistory(now time.Time) {
+	l.History = tidyMoves(l.History, now)
+	if !moveStatuses[l.Status] || l.StatusSince == nil {
+		return
+	}
+	// A watch over by its --until isn't caught up past its end: what came
+	// after is no move (a report to it is only a sign of life).
+	if l.Until != nil && !now.Before(*l.Until) && l.Status != "done" && l.StatusSince.After(*l.Until) {
+		return
+	}
+	n := len(l.History)
+	if n == 0 || (l.History[n-1].Status != l.Status && l.StatusSince.After(l.History[n-1].At)) {
+		at := l.StatusSince.UTC()
+		if at.After(now) {
+			at = now.UTC()
+		}
+		l.History = append(l.History, Move{At: at, Status: l.Status, Message: cleanText(l.Message, maxText), Value: cleanText(l.Value, maxText)})
+	}
+}
+
+// addMove records m, unless it says what the last move already says.
+func (l *Lookout) addMove(m Move, now time.Time) {
+	l.startHistory(now)
+	if n := len(l.History); n > 0 && l.History[n-1].Status == m.Status {
+		return
+	}
+	m.At = m.At.UTC()
+	m.Message, m.Value = cleanText(m.Message, maxText), cleanText(m.Value, maxText)
+	l.History = tidyMoves(append(l.History, m), now)
+}
+
+// backdateMove moves the last move, if it's status, to at: a stand-down
+// that took effect earlier than it was written (an --until that passed).
+func (l *Lookout) backdateMove(status string, at time.Time) {
+	if n := len(l.History); n > 0 && l.History[n-1].Status == status {
+		l.History[n-1].At = at.UTC()
+	}
 }
 
 // Seen is an acknowledgement of one status and value. It applies only while
@@ -52,7 +164,7 @@ type Seen struct {
 }
 
 var knownFields = []string{"name", "district", "tower", "label", "status", "message", "value",
-	"moved_at", "checked_at", "last_clear_at", "status_since", "next_by", "until", "seen", "link", "source", "tags"}
+	"moved_at", "checked_at", "last_clear_at", "status_since", "next_by", "until", "seen", "link", "source", "tags", "history"}
 
 func (l *Lookout) UnmarshalJSON(b []byte) error {
 	type plain Lookout
@@ -270,9 +382,13 @@ func parseWhen(flag, s string, now time.Time) (t *time.Time, relative bool, err 
 	hint := ""
 	if _, err := strconv.Atoi(s); err == nil {
 		hint = " (a number needs a unit: " + s + "m, " + s + "h)"
+	} else if m := upperUnitRE.FindStringSubmatch(s); m != nil {
+		hint = " (units are lowercase: " + m[1] + strings.ToLower(m[2]) + ")"
 	}
 	return nil, false, fmt.Errorf("--%s %q%s: want a span like 30m, 6h, 2w or \"5 hours\", a time like 23:59 or \"tomorrow 07:00\", a date like 2026-11-01 (through that day), a time like 2026-11-01 06:00, or none to clear it", flag, s, hint)
 }
+
+var upperUnitRE = regexp.MustCompile(`^(\d+)([SMHDW])$`)
 
 var clockRE = regexp.MustCompile(`^(?:(today|tomorrow) +)?(\d{1,2}):(\d{2})$`)
 

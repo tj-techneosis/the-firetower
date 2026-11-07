@@ -117,6 +117,12 @@ func ourBoard(port int, key string) bool { return proveBoard(port, key, proofWai
 // key, and only then is its answer believed. errNoBoard when no board of
 // ours answers; once one has, any failure is a real error.
 func boardRequest(cfg *Config, method, path string, body []byte) (*http.Response, error) {
+	return boardRequestProving(cfg, method, path, body, proofWait)
+}
+
+// boardRequestProving is boardRequest with the board given prove to prove
+// itself (a stop waits longer for a busy board than a bar does).
+func boardRequestProving(cfg *Config, method, path string, body []byte, prove time.Duration) (*http.Response, error) {
 	key := savedBoardKey(stateDir())
 	wait := boardAsk
 	if method == "POST" {
@@ -124,7 +130,7 @@ func boardRequest(cfg *Config, method, path string, body []byte) (*http.Response
 	}
 	c := pinned(cfg.Board.Port, wait)
 	pc := *c
-	pc.Timeout = proofWait
+	pc.Timeout = prove
 	if !proveOn(&pc, cfg.Board.Port, key) {
 		return nil, errNoBoard
 	}
