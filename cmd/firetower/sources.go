@@ -116,7 +116,7 @@ func (p *post) refreshLocal() {
 	vs := localViews(p.dir, now(), false)
 	shown := vs[:0]
 	for _, v := range vs {
-		if p.cfg.Board.shows(v.District, v.Tower) {
+		if p.cfg.Board.shows(v.District, v.Tower, v.Name, v.Tags) {
 			shown = append(shown, v)
 		}
 	}
@@ -267,11 +267,11 @@ func (p *post) apply(r *remote, e Event) bool {
 		if v.ID != v.District+"/"+v.Tower+"/"+v.Name {
 			break
 		}
-		// A tower this board doesn't show is dropped as it comes in, so
+		// A lookout this board doesn't show is dropped as it comes in, so
 		// nothing (the boards, the feed, the counts, act) ever sees it.
 		// Matched on the names the board will show (a name that isn't one
-		// shows as "unnamed"), before any folding.
-		if d, t := placeNames(v); r.src.shows(d, t) {
+		// shows as "unnamed") and its cleaned tags, before any folding.
+		if d, t := placeNames(v); r.src.shows(d, t, nameOrUnnamed(v.Name), cleanTags(v.Tags)) {
 			r.views[v.ID] = v
 		} else {
 			delete(r.views, v.ID)
@@ -329,13 +329,27 @@ func cleanTags(in []string) tagList {
 	var out tagList
 	seen := map[string]bool{}
 	for _, t := range in {
-		if checkName("tag", t) == nil && !seen[t] && len(out) < maxTags {
+		if checkName("tag", t) == nil && !seen[t] {
 			seen[t] = true
 			out = append(out, t)
 		}
 	}
+	// Sorted, then capped, so which ones are kept never hangs on a feed's
+	// order.
 	sort.Strings(out)
+	if len(out) > maxTags {
+		out = out[:maxTags]
+	}
 	return out
+}
+
+// nameOrUnnamed is a feed lookout's name as hide and keep match it: a name
+// that isn't one is "unnamed", as placeNames does for its places.
+func nameOrUnnamed(n string) string {
+	if checkName("name", n) != nil {
+		return "unnamed"
+	}
+	return n
 }
 
 // placeNames is a feed lookout's district and tower as a board shows them:
@@ -424,7 +438,14 @@ func (p *post) act(verb, id string) error {
 		}
 		// A lookout this board doesn't show can't be acted on from it,
 		// here as for a source's.
-		if !p.cfg.showLocal() || !p.cfg.Board.shows(parts[0], parts[1]) {
+		if !p.cfg.showLocal() {
+			return fmt.Errorf("no lookout %q", id)
+		}
+		var tags []string
+		if l, err := loadLookout(lookoutPath(p.dir, parts[0], parts[1], parts[2])); err == nil {
+			tags = cleanTags(l.Tags)
+		}
+		if !p.cfg.Board.shows(parts[0], parts[1], parts[2], tags) {
 			return fmt.Errorf("no lookout %q", id)
 		}
 		var err error

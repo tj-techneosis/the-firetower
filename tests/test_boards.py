@@ -236,7 +236,7 @@ class Shown(Remote):
         self.assertEqual(self.one("site/web/up")["state"], "yellow")  # not done, not removed
 
     def test_bad_patterns_refuse_to_start(self):
-        bad = ["[a", "a[", "*[", "[]a]", "a/b/c", "", "inbox/", "/bob", "Bob", " bob", "inbox\\*",
+        bad = ["[a", "a[", "*[", "[]a]", "a/b/c/d", "a//c", "[._]*", "[-]x", "[!a-z0-9]*", "", "inbox/", "/bob", "Bob", " bob", "inbox\\*",
                "_*", ".x", "-x", "a!b", "!", "^x", "a" * 65]
         for pat in bad:
             for field in ("hide", "keep"):

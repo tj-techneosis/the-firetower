@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -271,10 +272,52 @@ func tellBoard(cfg *Config, verb, id string) error {
 	return errors.New(cleanText(e.Error, maxText))
 }
 
+// sourceTags reads one of a source's lookouts' tags through its act
+// command (`ls --json`, without --all: what its feed would carry), cleaned
+// as a feed's are, for a board-less act whose showing depends on them. found
+// is false when the machine has no such lookout, or none its feed shows.
+func sourceTags(src Source, district, tower, name string) (tags []string, found bool, err error) {
+	if len(src.Act) == 0 {
+		return nil, false, fmt.Errorf("source %s has no act command, so its lookouts can only be looked at", src.Name)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	args := append(append([]string{}, src.Act[1:]...), "ls", "--district", district, "--tower", tower, "--json")
+	cmd := exec.CommandContext(ctx, src.Act[0], args...)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg == "" {
+			msg = err.Error()
+		}
+		return nil, false, fmt.Errorf("%s: reading its tags (ls, through act) to see whether it shows here failed: %s", src.Name, cleanText(msg, maxText))
+	}
+	var vs []struct {
+		ID   string          `json:"id"`
+		Tags json.RawMessage `json:"tags"`
+	}
+	if err := json.Unmarshal(out, &vs); err != nil {
+		return nil, false, fmt.Errorf("%s: its ls --json didn't read: %v", src.Name, err)
+	}
+	want := district + "/" + tower + "/" + name
+	for _, v := range vs {
+		if v.ID == want {
+			var t tagList
+			json.Unmarshal(v.Tags, &t) // tolerant: junk is no tags
+			return cleanTags(t), true, nil
+		}
+	}
+	return nil, false, nil
+}
+
 // actElsewhere is seen, done or rm on another machine's lookout
 // ("source:district/tower/name"): through the running board when one is up,
 // which knows the source and routes it, or else straight through the
-// source's act command from the config, as the board would.
+// source's act command from the config, as the board would: held to the
+// same hide and keep, asking the machine for the lookout's tags when they
+// decide.
 func actElsewhere(verb, id string) error {
 	// A broken config still names the board's port (a mistyped pattern
 	// mustn't stop acting through a board that has a good one); only the
@@ -298,7 +341,17 @@ func actElsewhere(verb, id string) error {
 					return err
 				}
 			}
-			if !s.shows(parts[0], parts[1]) {
+			shown, sure := s.showsUntagged(parts[0], parts[1], parts[2])
+			if !sure {
+				// Its tags decide (hide_tags, keep_tags): ask the
+				// machine for them, as its feed would give them.
+				tags, found, err := sourceTags(s, parts[0], parts[1], parts[2])
+				if err != nil {
+					return err
+				}
+				shown = found && s.shows(parts[0], parts[1], parts[2], tags)
+			}
+			if !shown {
 				return fmt.Errorf("no lookout %q", id) // hidden here, as on the board
 			}
 			return runAct(s, verb, orig)

@@ -356,7 +356,7 @@ key, and isn't believed. A board started by hand on another `--port` isn't
 found by them; set `board.port` instead.
 
 A running board reads the config when it starts: after changing `hide`,
-`keep` or a source, restart it (`firetower board --stop`, then `--open`, or
+`keep`, their `_tags` or a source, restart it (`firetower board --stop`, then `--open`, or
 restart the service), or the bar and the board keep the old one.
 
 ### Other machines
@@ -373,11 +373,13 @@ act = ["ssh", "-o", "BatchMode=yes", "work-mac", ".local/bin/firetower"]   # opt
 ```
 
 A shared machine that reports for everyone on it can be trimmed to what's
-yours. A lookout shows unless its tower matches `hide`, and `keep` wins over
-`hide` (so `keep` alone does nothing). Patterns are shell globs (`*`, `?`,
-`[abc]`, `[!abc]`) against `district/tower`, or the tower alone with no `/`,
-on that machine's own names (one that isn't a name shows, and matches, as
-`unnamed`), before any `district` folding:
+yours. A lookout shows unless it matches `hide` or `hide_tags`, and a match
+in `keep` or `keep_tags` wins over both (so a keep alone does nothing). Patterns are shell globs (`*`, `?`,
+`[abc]`, `[!abc]`) against `district/tower/name` (one lookout),
+`district/tower`, or the tower alone with no `/`, on that machine's own names
+(one that isn't a name shows, and matches, as `unnamed`), before any
+`district` folding. `hide_tags` and `keep_tags` do the same by tag: a lookout
+with a tag that matches is hidden, or kept:
 
 ```toml
 [[source]]
@@ -387,8 +389,27 @@ hide = ["inbox/*"]       # everyone's inbox towers...
 keep = ["inbox/alice"]   # ...except this one
 ```
 
+A tag follows a lookout wherever its check says it is, so it can keep one
+that moves. Hide a tower of heartbeats, and keep the ones whose check tags
+them as running on the shared box:
+
+```toml
+[[source]]
+name = "shared-box"
+command = ["ssh", "-o", "BatchMode=yes", "shared-box", ".local/bin/firetower", "watch", "--json"]
+hide = ["main/heartbeats"]
+keep_tags = ["on-shared-box"]
+```
+
+Tags come from the other machine's feed, and a lookout carries at most 16
+(a feed's extra ones are dropped, the last in alphabetical order first).
+Without a board running, `seen`, `done` and `rm` on another machine's
+lookout are held to the same rules: where its tags decide, they ask that
+machine for them first, with `ls` through `act` (so `act` has to allow
+`ls`, and a source with no `act` can't be acted on at all).
+
 A hidden lookout is left out of everything on this board: the list, the bar,
-the counts, the colours, the API and the buttons. The same two settings under
+the counts, the colours, the API and the buttons. The same settings under
 `[board]` trim this machine's own. A machine out of contact still shows as
 out of contact, even if every tower of its is hidden: silence never looks
 clear. It's what your board shows, not who may

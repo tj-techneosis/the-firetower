@@ -34,13 +34,17 @@ type Board struct {
 	Shown
 }
 
-// Shown is which towers a board shows from one place (a source, or this
-// machine under [board]): every one, less those matching hide, plus those
-// matching keep. A pattern is a shell glob against "district/tower", or
-// against the tower alone when it has no "/".
+// Shown is which lookouts a board shows from one place (a source, or this
+// machine under [board]): every one, less those hide takes away, plus those
+// keep brings back. A hide or keep pattern is a shell glob against
+// "district/tower/name", "district/tower", or the tower alone when it has no
+// "/". hide_tags and keep_tags do the same by tag: a lookout with a tag
+// matching one is hidden, or kept.
 type Shown struct {
-	Hide []string `toml:"hide"`
-	Keep []string `toml:"keep"`
+	Hide     []string `toml:"hide"`
+	Keep     []string `toml:"keep"`
+	HideTags []string `toml:"hide_tags"`
+	KeepTags []string `toml:"keep_tags"`
 }
 
 // A Source is another feed a board shows: any command that prints
@@ -204,7 +208,8 @@ func (s Shown) check(where string) error {
 	for _, field := range []struct {
 		name string
 		pats []string
-	}{{"hide", s.Hide}, {"keep", s.Keep}} {
+		tags bool
+	}{{"hide", s.Hide, false}, {"keep", s.Keep, false}, {"hide_tags", s.HideTags, true}, {"keep_tags", s.KeepTags, true}} {
 		for _, p := range field.pats {
 			bad := func(why string) error {
 				return fmt.Errorf("%s's %s pattern %q %s", where, field.name, p, why)
@@ -213,18 +218,28 @@ func (s Shown) check(where string) error {
 				return bad("is empty")
 			}
 			parts := strings.Split(p, "/")
-			if len(parts) > 2 {
-				return bad("has more than one '/': it is district/tower, or a tower")
+			if field.tags && len(parts) > 1 {
+				return bad("has a '/': it is a tag")
+			}
+			if len(parts) > 3 {
+				return bad("has more than two '/': it is district/tower/name, district/tower, or a tower")
 			}
 			for _, part := range parts {
 				if part == "" {
-					return bad("has an empty side of its '/': it is district/tower, or a tower")
+					return bad("has an empty side of a '/': it is district/tower/name, district/tower, or a tower")
 				}
-				if !patternRE.MatchString(part) || !canMatchName(part) {
-					return bad("can never match: names are lowercase letters, digits, '.', '_' and '-', starting with a letter or digit, and a pattern adds only * ? [ ] (and [! ] or [^ ])")
+				what := "names"
+				if field.tags {
+					what = "tags"
+				}
+				if !patternRE.MatchString(part) {
+					return bad("can never match: " + what + " are lowercase letters, digits, '.', '_' and '-', starting with a letter or digit, and a pattern adds only * ? [ ] (and [! ] or [^ ])")
 				}
 				if _, err := path.Match(glob(part), ""); err != nil {
 					return bad("is not a pattern: " + err.Error())
+				}
+				if !canMatchName(part) {
+					return bad("can never match: " + what + " are lowercase letters, digits, '.', '_' and '-', starting with a letter or digit, and a pattern adds only * ? [ ] (and [! ] or [^ ])")
 				}
 			}
 		}
@@ -247,6 +262,20 @@ func canMatchName(part string) bool {
 	if !strings.ContainsAny(part, "*?[") {
 		return nameRE.MatchString(part)
 	}
+	// A leading class must let in something a name starts with.
+	if part[0] == '[' {
+		end := strings.IndexByte(part[1:], ']')
+		if end < 0 {
+			return true // not a pattern: path.Match says so
+		}
+		class := glob(part[:end+2])
+		for _, c := range "abcdefghijklmnopqrstuvwxyz0123456789" {
+			if ok, _ := path.Match(class, string(c)); ok {
+				return true
+			}
+		}
+		return false
+	}
 	return true
 }
 
@@ -254,20 +283,48 @@ func canMatchName(part string) bool {
 // and "^" in Go (both are taken). Names can't hold "!", so nothing is lost.
 func glob(p string) string { return strings.ReplaceAll(p, "[!", "[^") }
 
-// shows says whether a lookout in district/tower is shown. keep only brings
-// back what hide took away, so keep alone changes nothing.
-func (s Shown) shows(district, tower string) bool {
-	return !matchTower(s.Hide, district, tower) || matchTower(s.Keep, district, tower)
+// shows says whether a lookout is shown. keep only brings back what hide
+// took away, so keep alone changes nothing.
+func (s Shown) shows(district, tower, name string, tags []string) bool {
+	hidden := matchPlace(s.Hide, district, tower, name) || matchTags(s.HideTags, tags)
+	return !hidden || matchPlace(s.Keep, district, tower, name) || matchTags(s.KeepTags, tags)
 }
 
-func matchTower(pats []string, district, tower string) bool {
+// showsUntagged is shows for a lookout whose tags aren't known here (one on
+// another machine, acted on without a board). sure is false when its tags
+// could change the answer.
+func (s Shown) showsUntagged(district, tower, name string) (shown, sure bool) {
+	if matchPlace(s.Keep, district, tower, name) {
+		return true, true
+	}
+	if matchPlace(s.Hide, district, tower, name) {
+		return false, len(s.KeepTags) == 0
+	}
+	return true, len(s.HideTags) == 0
+}
+
+func matchPlace(pats []string, district, tower, name string) bool {
 	for _, p := range pats {
-		name := tower
-		if strings.Contains(p, "/") {
-			name = district + "/" + tower
+		against := tower
+		switch strings.Count(p, "/") {
+		case 1:
+			against = district + "/" + tower
+		case 2:
+			against = district + "/" + tower + "/" + name
 		}
-		if ok, _ := path.Match(glob(p), name); ok {
+		if ok, _ := path.Match(glob(p), against); ok {
 			return true
+		}
+	}
+	return false
+}
+
+func matchTags(pats, tags []string) bool {
+	for _, p := range pats {
+		for _, t := range tags {
+			if ok, _ := path.Match(glob(p), t); ok {
+				return true
+			}
 		}
 	}
 	return false

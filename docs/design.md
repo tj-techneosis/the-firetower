@@ -323,7 +323,8 @@ stranger holding the port neither sees the key nor is believed. Once a board
 has proved itself, a failure is reported, never retried another way: a slow
 `act` must not run twice on the other machine. `firetower
 seen|done|rm source:…` posts to the board, or with none runs the source's
-`act` itself, held to the same `hide`. That is what keeps a bar refreshing
+`act` itself, held to the same `hide` (and, where `hide_tags` or `keep_tags` would decide, the
+lookout's tags read first through the same `act`, as `ls --json`). That is what keeps a bar refreshing
 every few seconds from being an ssh login per source per refresh. `board
 --open` and `--start` never tie a board to whoever asked: the one up is
 used, or one is started in the background (its own session, its output
@@ -389,8 +390,9 @@ name = "work-mac"
 command = ["ssh", "work-mac", "firetower", "watch", "--json"]
 district = "work"        # optional: put everything from it in one district
 act = ["ssh", "work-mac", "firetower"]   # optional: lets seen/done/rm reach it
-hide = ["inbox/*"]       # optional: towers this board leaves out
+hide = ["inbox/*"]       # optional: towers (or district/tower/name) this board leaves out
 keep = ["inbox/alice"]   # optional: back in, even if hidden
+# hide_tags, keep_tags: the same, by a lookout's tags
 ```
 
 A source is any command that prints `watch --json`. Without `district`, its
@@ -403,18 +405,22 @@ looking clear, and the board reconnects with a backoff. Both boards read the
 same sources. (One district per machine is then just a config choice, not
 something the tool assumes.)
 
-`hide` and `keep` choose which of a source's towers this board shows, for a
+`hide` and `keep` (and their `_tags`) choose which of a source's lookouts this board shows, for a
 shared machine that reports for everyone on it: each board keeps its own,
 and the machine never needs to know who is looking. A lookout shows unless
-its tower matches `hide`, and `keep` wins over `hide` (so `keep` alone does
-nothing). Patterns are shell globs (`[!x]` negates, as in the shell) against
-`district/tower`, or the tower alone when there's no `/`, matched on the
+it matches `hide` or `hide_tags`, and `keep` or `keep_tags` wins over both
+(so a keep alone does nothing). Patterns are shell globs (`[!x]` negates, as
+in the shell) against `district/tower/name`, `district/tower`, or the tower
+alone when there's no `/`; the `_tags` ones against each of a lookout's tags.
+Tags are how a lookout that moves stays kept: the check says where it runs
+by its tags, and the board follows. Never by a value or a message, which are
+a check's own words. Places are matched on the
 names the board would show (a feed's name that isn't one is `unnamed`),
 before any folding. A hidden lookout is dropped as the feed comes in, so it
 reaches nothing: not the board, the bar, the counts, a district's colour,
 the API or the buttons. The one exception is the machine itself: a source
 out of contact still shows, and counts, as out of contact even with every
-tower of its hidden, since silence must never look clear. The same two settings under `[board]` apply to this
+tower of its hidden, since silence must never look clear. The same four settings under `[board]` apply to this
 machine's own lookouts, and the buttons refuse those too. It's what a board
 shows, not who may read what: anyone on that machine can still `firetower
 ls` there. A pattern that could never match a name (a capital, a space, an
