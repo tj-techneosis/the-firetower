@@ -407,7 +407,8 @@ Without a board running, `seen`, `done` and `rm` on another machine's
 lookout are held to the same rules: where its tags decide, they ask that
 machine for them first, with `ls --all` through `act` (so `act` has to allow
 `ls`, and a source with no `act` can't be acted on at all). One stood down
-over a day ago is still found by its id, with tag rules or without.
+over a day ago is judged by its tags like any other. A running board, though,
+knows only what the feed carries, which leaves it out by then.
 
 A hidden lookout is left out of everything on this board: the list, the bar,
 the counts, the colours, the API and the buttons. The same settings under
@@ -415,7 +416,9 @@ the counts, the colours, the API and the buttons. The same settings under
 out of contact, even if every tower of its is hidden: silence never looks
 clear. It's what your board shows, not who may
 read what: `firetower ls` and `watch` still show everything. A pattern that
-could never match a name (a capital, a space, an empty side of the `/`) is an
+could never match a name (a capital, a space, an empty side of the `/`, a
+class that lets in nothing a name holds, or more than 64 characters, each `?`
+or `[ ]` counting as one) is an
 error like any other in the config: the board and the bar refuse to start
 until it's fixed (a board already running keeps the config it started
 with, and `seen`, `done` and `rm` on another machine's lookout still go

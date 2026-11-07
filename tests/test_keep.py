@@ -55,7 +55,7 @@ class KeepOne(Remote):
 
     def test_bad_tag_patterns_refuse(self):
         for pat in ["a/b", "", "Staff", "-x", "a!b", "[!]", "a" * 65, "[._]*", "[!a-z0-9]x", "[]",
-                    "*" + "a" * 65, "a?" + "b" * 63, "[ab]" * 65]:
+                    "*" + "a" * 65, "a?" + "b" * 63, "[ab]" * 65, "a[z-a]", "a]*", "x[!a-z0-9._-]", "a^b"]:
             for field in ("hide_tags", "keep_tags"):
                 with self.subTest(pat=pat, field=field):
                     self.write_config(name="shared", command=[*self.remote_cmd, "watch", "--json"], **{field: [pat]})
@@ -63,13 +63,30 @@ class KeepOne(Remote):
                     self.assertIn(f"{field} pattern {json.dumps(pat if len(pat) <= 40 else pat[:40] + '…', ensure_ascii=False)}", p.stdout)
                     self.config.write_text(f"[board]\n{field} = {json.dumps([pat])}\n")
                     self.assertIn(f"[board]'s {field} pattern", self.ft("bar", ok=False).stdout)
-                    if pat in ("Staff", "-x", "a!b", "[._]*"):
-                        self.assertIn("tags are", p.stdout)
+                    if pat in ("Staff", "-x", "a!b", "[._]*", "a[z-a]"):
+                        self.assertRegex(p.stdout, r"\btags (are|start|hold)\b")
+
+    def refusal(self, **opts):
+        self.write_config(name="shared", command=[*self.remote_cmd, "watch", "--json"], **opts)
+        p = self.ft("board", "--port", str(free_port()), ok=False)
+        return p.stdout + p.stderr
 
     def test_too_long_says_how_long(self):
-        self.write_config(name="shared", command=[*self.remote_cmd, "watch", "--json"], keep_tags=["a" * 65])
-        p = self.ft("board", "--port", str(free_port()), ok=False)
-        self.assertIn("at most 64", p.stdout + p.stderr)
+        self.assertIn("needs 65 characters, and tags are at most 64", self.refusal(keep_tags=["a" * 65]))
+        self.assertIn("needs 65 characters", self.refusal(keep_tags=["[ab]" * 65]))
+
+    def test_the_reason_names_the_culprit_past_a_cut(self):
+        out = self.refusal(keep_tags=["a" * 40 + "A"])
+        self.assertIn('has \'A\'', out)
+        self.assertIn('"' + "a" * 40 + '…"', out)
+        # cut by characters, so nothing is split
+        self.assertIn('"' + "é" * 40 + '…"', self.refusal(keep_tags=["é" * 41]))
+
+    def test_each_reason_says_what_it_is(self):
+        self.assertIn("tags start with a lowercase letter or digit", self.refusal(keep_tags=["-x"]))
+        self.assertIn('"[z-a]" lets in nothing tags hold', self.refusal(keep_tags=["a[z-a]"]))
+        self.assertIn('"]" lets in nothing names hold', self.refusal(hide=["a]*"]))
+        self.assertIn('"!" lets in nothing names hold', self.refusal(hide=["a!b"]))
 
     def test_bang_or_caret_later_in_a_class_is_a_character(self):
         # "[a!]" still lets in "a", so it can match a name: not refused.
@@ -77,7 +94,23 @@ class KeepOne(Remote):
                          ["shared:main/heartbeats/alice", "shared:site/web/up"])
         self.assertEqual(self.shown(hide=["heartbeats"], keep_tags=["on-[s^]hared-box"]),
                          ["shared:main/heartbeats/alice", "shared:site/web/up"])
-        self.assertEqual(len(self.shown(hide=["*" * 3 + "a" * 64])), 3)  # 64 characters can still match
+
+    def test_a_class_starting_with_a_bracket_is_not_a_pattern(self):
+        # path.Match ends a class at its first "]", so "[]o]" doesn't read.
+        self.assertIn("is not a pattern", self.refusal(keep_tags=["[]o]n-shared-box"]))
+
+    def test_a_pattern_of_64_characters_matches_a_tag_of_64(self):
+        self.on_other("set", "main/heartbeats/alice", "green", "--tag", "staff," + "a" * 64)
+        self.assertEqual(self.shown(hide=["heartbeats"], keep_tags=["?" + "a" * 62 + "[ab]"]),
+                         ["shared:main/heartbeats/alice", "shared:site/web/up"])
+
+    def test_three_part_patterns_under_board(self):
+        self.ft("set", "mine/jobs/one", "red")
+        self.ft("set", "mine/jobs/two", "red")
+        self.config.write_text('[board]\nhide = ["mine/jobs"]\nkeep = ["mine/jobs/one"]\n')
+        ids = self.ids(self.bar())
+        self.assertIn("mine/jobs/one", ids)
+        self.assertNotIn("mine/jobs/two", ids)
 
     def test_without_a_board_tags_are_asked_of_the_machine(self):
         self.on_other("set", "main/heartbeats/alice", "red", "--tag", "staff,on-shared-box")

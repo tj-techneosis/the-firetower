@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/BurntSushi/toml"
 )
@@ -35,11 +36,11 @@ type Board struct {
 }
 
 // Shown is which lookouts a board shows from one place (a source, or this
-// machine under [board]): every one, less those hide takes away, plus those
-// keep brings back. A hide or keep pattern is a shell glob against
+// machine under [board]): every one, less those hide or hide_tags take
+// away, plus those keep or keep_tags bring back (either keep beats either
+// hide). A hide or keep pattern is a shell glob against
 // "district/tower/name", "district/tower", or the tower alone when it has no
-// "/". hide_tags and keep_tags do the same by tag: a lookout with a tag
-// matching one is hidden, or kept.
+// "/". hide_tags and keep_tags are globs against each of a lookout's tags.
 type Shown struct {
 	Hide     []string `toml:"hide"`
 	Keep     []string `toml:"keep"`
@@ -212,11 +213,7 @@ func (s Shown) check(where string) error {
 	}{{"hide", s.Hide, false}, {"keep", s.Keep, false}, {"hide_tags", s.HideTags, true}, {"keep_tags", s.KeepTags, true}} {
 		for _, p := range field.pats {
 			bad := func(why string) error {
-				q := p // a long pattern is cut, so the reason after it is still read
-				if len(q) > 40 {
-					q = q[:40] + "…"
-				}
-				return fmt.Errorf("%s's %s pattern %q %s", where, field.name, q, why)
+				return fmt.Errorf("%s's %s pattern %q %s", where, field.name, cutRunes(p, 40), why)
 			}
 			if p == "" {
 				return bad("is empty")
@@ -228,22 +225,23 @@ func (s Shown) check(where string) error {
 			if len(parts) > 3 {
 				return bad("has more than two '/': it is district/tower/name, district/tower, or a tower")
 			}
+			what := "names"
+			if field.tags {
+				what = "tags"
+			}
 			for _, part := range parts {
 				if part == "" {
 					return bad("has an empty side of a '/': it is district/tower/name, district/tower, or a tower")
 				}
-				what := "names"
-				if field.tags {
-					what = "tags"
-				}
-				if !patternRE.MatchString(part) {
-					return bad("can never match: " + what + " are lowercase letters, digits, '.', '_' and '-', starting with a letter or digit, and a pattern adds only * ? [ ] (and [! ] or [^ ])")
+				if i := strings.IndexFunc(part, func(r rune) bool { return !patternRE.MatchString(string(r)) }); i >= 0 {
+					r, _ := utf8.DecodeRuneInString(part[i:])
+					return bad(fmt.Sprintf("has %q, which can never match: %s are lowercase letters, digits, '.', '_' and '-', and a pattern adds only * ? [ ] (and [! ] or [^ ])", r, what))
 				}
 				if _, err := path.Match(glob(part), ""); err != nil {
 					return bad("is not a pattern: " + err.Error())
 				}
-				if !canMatchName(part) {
-					return bad("can never match: " + what + " are lowercase letters, digits, '.', '_' and '-', starting with a letter or digit (at most 64), and a pattern adds only * ? [ ] (and [! ] or [^ ])")
+				if why := cantMatch(part, what); why != "" {
+					return bad("can never match: " + why)
 				}
 			}
 		}
@@ -251,72 +249,78 @@ func (s Shown) check(where string) error {
 	return nil
 }
 
-// canMatchName rules out what patternRE lets through but no name can be: a
-// first character that can't start a name, "!" or "^" outside the start of
-// a class, plain text that isn't a name (too long, say), and a pattern that
-// needs more characters than a name can hold.
-func canMatchName(part string) bool {
-	if strings.ContainsRune("._-!^]", rune(part[0])) {
-		return false
+// cutRunes shortens s to n characters (not bytes, so none is split), for
+// an error that must still be read to the end.
+func cutRunes(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
 	}
-	// Outside a class, "!" and "^" are characters no name holds. Inside
-	// one they negate (right after "[") or are just one more character the
-	// class lets in ("[a!]" still matches "a"), so they're fine there.
-	in := false
-	for _, r := range part {
-		switch {
-		case r == '[' && !in:
-			in = true
-		case r == ']' && in:
-			in = false
-		case (r == '!' || r == '^') && !in:
-			return false
-		}
-	}
-	if !strings.ContainsAny(part, "*?[") {
-		return nameRE.MatchString(part)
-	}
-	// Every character but * stands for one character of the name, so a
-	// pattern needing more than a name can hold matches nothing.
-	if minLen(part) > maxName {
-		return false
-	}
-	// A leading class must let in something a name starts with.
-	if part[0] == '[' {
-		end := strings.IndexByte(part[1:], ']')
-		if end < 0 {
-			return true // not a pattern: path.Match says so
-		}
-		class := glob(part[:end+2])
-		for _, c := range "abcdefghijklmnopqrstuvwxyz0123456789" {
-			if ok, _ := path.Match(class, string(c)); ok {
-				return true
-			}
-		}
-		return false
-	}
-	return true
+	return string([]rune(s)[:n]) + "…"
 }
 
 // maxName is the longest a name or tag can be (nameRE).
 const maxName = 64
 
-// minLen is how many characters a name must have to match the pattern: one
-// for each character or class, none for *.
-func minLen(part string) int {
-	n, in := 0, false
-	for _, r := range part {
-		switch {
-		case in:
-			in = r != ']'
-		case r == '[':
-			in = true
-			n++
-		case r != '*':
-			n++
+// nameChars is every character a name or tag may hold; one may start with
+// the first 36 only.
+const nameChars = "abcdefghijklmnopqrstuvwxyz0123456789._-"
+
+// cantMatch says why a glob that path.Match accepts can still match no name
+// or tag, or "" when one could match. It reads the glob as path.Match does,
+// as a run of pieces: "*" (any characters), or one character, a "?" or a
+// class. Every one-character piece must let in some name character (so a
+// stray "!", "^" or "]", an empty range or a class of none is refused), the
+// first must let in one a name starts with, and a name has room for at
+// most 64 of them.
+func cantMatch(part, what string) string {
+	g := glob(part)
+	n, first := 0, true
+	for i := 0; i < len(g); {
+		var piece string
+		switch g[i] {
+		case '*':
+			i++
+			first = false // a star may take the first character itself
+			continue
+		case '[':
+			// As path.Match reads a class: an optional "^", then up to the
+			// first "]" that isn't the class's first character.
+			j := i + 1
+			if j < len(g) && g[j] == '^' {
+				j++
+			}
+			j++
+			for j < len(g) && g[j] != ']' {
+				j++
+			}
+			piece, i = g[i:j+1], j+1
+		default:
+			piece, i = g[i:i+1], i+1
 		}
+		allowed := nameChars
+		if first {
+			allowed = nameChars[:36]
+		}
+		ok := false
+		for _, c := range allowed {
+			if m, _ := path.Match(piece, string(c)); m {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			if first {
+				return fmt.Sprintf("%s start with a lowercase letter or digit, and %q lets in none", what, piece)
+			}
+			return fmt.Sprintf("%q lets in nothing %s hold (lowercase letters, digits, '.', '_' and '-')", piece, what)
+		}
+		first = false
+		n++
 	}
-	return n
+	if n > maxName {
+		return fmt.Sprintf("it needs %d characters, and %s are at most %d (each ? or [ ] is one character)", n, what, maxName)
+	}
+	return ""
 }
 
 // glob turns a shell glob into Go's: a class negates with "!" in the shell

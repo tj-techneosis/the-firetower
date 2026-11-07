@@ -275,9 +275,8 @@ func tellBoard(cfg *Config, verb, id string) error {
 // sourceTags reads one of a source's lookouts' tags through its act
 // command (`ls --all --json`), cleaned as a feed's are, for a board-less act
 // whose showing depends on them. --all, so one stood down over a day ago is
-// found too: acting by id reaches it when the place rules decide, and adding
-// a tag rule mustn't change that. found is false when the machine has no
-// such lookout.
+// judged by its tags like any other, as it is when the place rules decide
+// alone. found is false when the machine has no such lookout.
 func sourceTags(src Source, district, tower, name string) (tags []string, found bool, err error) {
 	if len(src.Act) == 0 {
 		return nil, false, fmt.Errorf("source %s has no act command, so its lookouts can only be looked at", src.Name)
@@ -294,14 +293,14 @@ func sourceTags(src Source, district, tower, name string) (tags []string, found 
 		if msg == "" {
 			msg = err.Error()
 		}
-		return nil, false, fmt.Errorf("%s: reading its tags (ls, through act) to see whether it shows here failed: %s", src.Name, cleanText(msg, maxText))
+		return nil, false, fmt.Errorf("%s: reading its tags (ls --all, through act) to see whether it shows here failed: %s", src.Name, cleanText(msg, maxText))
 	}
 	var vs []struct {
 		ID   string          `json:"id"`
 		Tags json.RawMessage `json:"tags"`
 	}
 	if err := json.Unmarshal(out, &vs); err != nil {
-		return nil, false, fmt.Errorf("%s: its ls --json didn't read: %v", src.Name, err)
+		return nil, false, fmt.Errorf("%s: its ls --all --json didn't read: %v", src.Name, err)
 	}
 	want := district + "/" + tower + "/" + name
 	for _, v := range vs {

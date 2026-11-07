@@ -324,7 +324,7 @@ has proved itself, a failure is reported, never retried another way: a slow
 `act` must not run twice on the other machine. `firetower
 seen|done|rm source:…` posts to the board, or with none runs the source's
 `act` itself, held to the same `hide` (and, where `hide_tags` or `keep_tags` would decide, the
-lookout's tags read first through the same `act`, as `ls --all --json`, so adding a tag rule never changes whether an old stood-down lookout is found by its id). That is what keeps a bar refreshing
+lookout's tags read first through the same `act`, as `ls --all --json`, so an old stood-down lookout is judged by its tags like any other; a board knows only what its feed carries, which leaves those out). That is what keeps a bar refreshing
 every few seconds from being an ssh login per source per refresh. `board
 --open` and `--start` never tie a board to whoever asked: the one up is
 used, or one is started in the background (its own session, its output
@@ -424,7 +424,8 @@ tower of its hidden, since silence must never look clear. The same four settings
 machine's own lookouts, and the buttons refuse those too. It's what a board
 shows, not who may read what: anyone on that machine can still `firetower
 ls` there. A pattern that could never match a name (a capital, a space, an
-empty side of the `/`) or can't be read is a config error, like a bad port:
+empty side of the `/`, a class letting in no name character, more than 64
+characters) or can't be read is a config error, like a bad port:
 the boards refuse to start, rather than quietly showing everything. A board
 already running keeps the config it started with, so `seen|done|rm source:…`
 still go through it, and `--stop` (which needs only the port) still stops it.
