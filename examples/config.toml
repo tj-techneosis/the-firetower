@@ -11,7 +11,7 @@ port = 7480
 # ui = "~/my-firetower-page"   # your own page instead of the built-in one
 # local = false                # show only the sources, not this machine
 # hide = ["scratch/*"]         # this machine's lookouts to leave out: globs on district/tower/name, district/tower, or a tower
-# keep = ["scratch/build"]     # back in, even if hidden (keep wins over hide)
+# keep = ["scratch/build"]     # back in, even if hidden (keep and keep_tags win over hide and hide_tags)
 # hide_tags = ["temporary"]    # the same, by a lookout's tags
 # keep_tags = ["mine"]
 
@@ -24,6 +24,6 @@ command = ["ssh", "-o", "BatchMode=yes", "-o", "ServerAliveInterval=30", "work-m
 district = "work"                  # optional: fold all of it into one district
 act = ["ssh", "-o", "BatchMode=yes", "work-mac", ".local/bin/firetower"]   # optional: lets seen/done/rm reach it (and ls, for its tags without a board)
 # hide = ["inbox/*"]               # optional: its lookouts to leave out (district/tower/name, district/tower or a tower), by its own names
+# keep = ["inbox/alice"]           # optional: back in, even if hidden (keep and keep_tags win over hide and hide_tags)
 # hide_tags = ["temporary"]        # optional: the same, by tag
-# keep = ["inbox/alice"]           # optional: back in, even if hidden (keep wins over hide)
 # keep_tags = ["on-work-mac"]      # optional: back in by tag, so one that moves follows its tag

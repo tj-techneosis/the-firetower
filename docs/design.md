@@ -324,7 +324,7 @@ has proved itself, a failure is reported, never retried another way: a slow
 `act` must not run twice on the other machine. `firetower
 seen|done|rm source:…` posts to the board, or with none runs the source's
 `act` itself, held to the same `hide` (and, where `hide_tags` or `keep_tags` would decide, the
-lookout's tags read first through the same `act`, as `ls --json`). That is what keeps a bar refreshing
+lookout's tags read first through the same `act`, as `ls --all --json`, so adding a tag rule never changes whether an old stood-down lookout is found by its id). That is what keeps a bar refreshing
 every few seconds from being an ssh login per source per refresh. `board
 --open` and `--start` never tie a board to whoever asked: the one up is
 used, or one is started in the background (its own session, its output

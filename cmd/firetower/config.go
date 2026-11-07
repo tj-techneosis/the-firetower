@@ -212,7 +212,11 @@ func (s Shown) check(where string) error {
 	}{{"hide", s.Hide, false}, {"keep", s.Keep, false}, {"hide_tags", s.HideTags, true}, {"keep_tags", s.KeepTags, true}} {
 		for _, p := range field.pats {
 			bad := func(why string) error {
-				return fmt.Errorf("%s's %s pattern %q %s", where, field.name, p, why)
+				q := p // a long pattern is cut, so the reason after it is still read
+				if len(q) > 40 {
+					q = q[:40] + "…"
+				}
+				return fmt.Errorf("%s's %s pattern %q %s", where, field.name, q, why)
 			}
 			if p == "" {
 				return bad("is empty")
@@ -239,7 +243,7 @@ func (s Shown) check(where string) error {
 					return bad("is not a pattern: " + err.Error())
 				}
 				if !canMatchName(part) {
-					return bad("can never match: " + what + " are lowercase letters, digits, '.', '_' and '-', starting with a letter or digit, and a pattern adds only * ? [ ] (and [! ] or [^ ])")
+					return bad("can never match: " + what + " are lowercase letters, digits, '.', '_' and '-', starting with a letter or digit (at most 64), and a pattern adds only * ? [ ] (and [! ] or [^ ])")
 				}
 			}
 		}
@@ -249,18 +253,33 @@ func (s Shown) check(where string) error {
 
 // canMatchName rules out what patternRE lets through but no name can be: a
 // first character that can't start a name, "!" or "^" outside the start of
-// a class, and plain text that isn't a name (too long, say).
+// a class, plain text that isn't a name (too long, say), and a pattern that
+// needs more characters than a name can hold.
 func canMatchName(part string) bool {
 	if strings.ContainsRune("._-!^]", rune(part[0])) {
 		return false
 	}
-	for i, r := range part {
-		if (r == '!' || r == '^') && (i == 0 || part[i-1] != '[') {
+	// Outside a class, "!" and "^" are characters no name holds. Inside
+	// one they negate (right after "[") or are just one more character the
+	// class lets in ("[a!]" still matches "a"), so they're fine there.
+	in := false
+	for _, r := range part {
+		switch {
+		case r == '[' && !in:
+			in = true
+		case r == ']' && in:
+			in = false
+		case (r == '!' || r == '^') && !in:
 			return false
 		}
 	}
 	if !strings.ContainsAny(part, "*?[") {
 		return nameRE.MatchString(part)
+	}
+	// Every character but * stands for one character of the name, so a
+	// pattern needing more than a name can hold matches nothing.
+	if minLen(part) > maxName {
+		return false
 	}
 	// A leading class must let in something a name starts with.
 	if part[0] == '[' {
@@ -277,6 +296,27 @@ func canMatchName(part string) bool {
 		return false
 	}
 	return true
+}
+
+// maxName is the longest a name or tag can be (nameRE).
+const maxName = 64
+
+// minLen is how many characters a name must have to match the pattern: one
+// for each character or class, none for *.
+func minLen(part string) int {
+	n, in := 0, false
+	for _, r := range part {
+		switch {
+		case in:
+			in = r != ']'
+		case r == '[':
+			in = true
+			n++
+		case r != '*':
+			n++
+		}
+	}
+	return n
 }
 
 // glob turns a shell glob into Go's: a class negates with "!" in the shell

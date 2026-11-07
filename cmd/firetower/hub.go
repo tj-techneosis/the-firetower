@@ -273,16 +273,18 @@ func tellBoard(cfg *Config, verb, id string) error {
 }
 
 // sourceTags reads one of a source's lookouts' tags through its act
-// command (`ls --json`, without --all: what its feed would carry), cleaned
-// as a feed's are, for a board-less act whose showing depends on them. found
-// is false when the machine has no such lookout, or none its feed shows.
+// command (`ls --all --json`), cleaned as a feed's are, for a board-less act
+// whose showing depends on them. --all, so one stood down over a day ago is
+// found too: acting by id reaches it when the place rules decide, and adding
+// a tag rule mustn't change that. found is false when the machine has no
+// such lookout.
 func sourceTags(src Source, district, tower, name string) (tags []string, found bool, err error) {
 	if len(src.Act) == 0 {
 		return nil, false, fmt.Errorf("source %s has no act command, so its lookouts can only be looked at", src.Name)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	args := append(append([]string{}, src.Act[1:]...), "ls", "--district", district, "--tower", tower, "--json")
+	args := append(append([]string{}, src.Act[1:]...), "ls", "--district", district, "--tower", tower, "--all", "--json")
 	cmd := exec.CommandContext(ctx, src.Act[0], args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr

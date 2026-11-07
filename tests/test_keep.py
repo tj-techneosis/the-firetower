@@ -54,16 +54,30 @@ class KeepOne(Remote):
         self.assertEqual(self.shown(hide=["heartbeats"], keep_tags=["shared-box"]), ["shared:site/web/up"])
 
     def test_bad_tag_patterns_refuse(self):
-        for pat in ["a/b", "", "Staff", "-x", "a!b", "[!]", "a" * 65, "[._]*", "[!a-z0-9]x", "[]"]:
+        for pat in ["a/b", "", "Staff", "-x", "a!b", "[!]", "a" * 65, "[._]*", "[!a-z0-9]x", "[]",
+                    "*" + "a" * 65, "a?" + "b" * 63, "[ab]" * 65]:
             for field in ("hide_tags", "keep_tags"):
                 with self.subTest(pat=pat, field=field):
                     self.write_config(name="shared", command=[*self.remote_cmd, "watch", "--json"], **{field: [pat]})
                     p = self.ft("bar", ok=False)
-                    self.assertIn(f"{field} pattern {json.dumps(pat)}", p.stdout)
+                    self.assertIn(f"{field} pattern {json.dumps(pat if len(pat) <= 40 else pat[:40] + '…', ensure_ascii=False)}", p.stdout)
                     self.config.write_text(f"[board]\n{field} = {json.dumps([pat])}\n")
                     self.assertIn(f"[board]'s {field} pattern", self.ft("bar", ok=False).stdout)
                     if pat in ("Staff", "-x", "a!b", "[._]*"):
                         self.assertIn("tags are", p.stdout)
+
+    def test_too_long_says_how_long(self):
+        self.write_config(name="shared", command=[*self.remote_cmd, "watch", "--json"], keep_tags=["a" * 65])
+        p = self.ft("board", "--port", str(free_port()), ok=False)
+        self.assertIn("at most 64", p.stdout + p.stderr)
+
+    def test_bang_or_caret_later_in_a_class_is_a_character(self):
+        # "[a!]" still lets in "a", so it can match a name: not refused.
+        self.assertEqual(self.shown(hide=["heartbeats"], keep=["main/heartbeats/[a!]lice"]),
+                         ["shared:main/heartbeats/alice", "shared:site/web/up"])
+        self.assertEqual(self.shown(hide=["heartbeats"], keep_tags=["on-[s^]hared-box"]),
+                         ["shared:main/heartbeats/alice", "shared:site/web/up"])
+        self.assertEqual(len(self.shown(hide=["*" * 3 + "a" * 64])), 3)  # 64 characters can still match
 
     def test_without_a_board_tags_are_asked_of_the_machine(self):
         self.on_other("set", "main/heartbeats/alice", "red", "--tag", "staff,on-shared-box")
@@ -98,18 +112,35 @@ class KeepOne(Remote):
         p = self.ft("seen", "shared:main/heartbeats/bob", ok=False)
         self.assertIn("no lookout", p.stdout + p.stderr)
 
-    def test_without_a_board_one_stood_down_past_a_day_is_not_there(self):
-        # As on the board, whose feed leaves it out by then.
+    def old_stood_down_alice(self):
         self.on_other("set", "main/heartbeats/alice", "red", "--tag", "on-shared-box")
         self.on_other("done", "main/heartbeats/alice")
-        self.write_config(name="shared", command=[*self.remote_cmd, "watch", "--json"],
-                          act=self.remote_cmd, hide=["heartbeats"], keep_tags=["on-shared-box"])
         self.remote_cmd.insert(1, "FIRETOWER_NOW=2030-01-01T00:00:00Z")
+        return self.other / "main" / "heartbeats" / "alice.json"
+
+    def test_without_a_board_one_stood_down_past_a_day_is_found_by_tag(self):
+        # Acting by id reaches it when the place rules decide; a tag rule
+        # mustn't change that, so its tags are read with ls --all.
+        f = self.old_stood_down_alice()
         self.write_config(name="shared", command=[*self.remote_cmd, "watch", "--json"],
                           act=self.remote_cmd, hide=["heartbeats"], keep_tags=["on-shared-box"])
+        self.ft("rm", "shared:main/heartbeats/alice")
+        self.assertFalse(f.exists())
+
+    def test_without_a_board_one_stood_down_past_a_day_is_found_by_name(self):
+        f = self.old_stood_down_alice()
+        self.write_config(name="shared", command=[*self.remote_cmd, "watch", "--json"],
+                          act=self.remote_cmd, hide=["heartbeats"], keep=["main/heartbeats/alice"])
+        self.ft("rm", "shared:main/heartbeats/alice")
+        self.assertFalse(f.exists())
+
+    def test_without_a_board_one_stood_down_past_a_day_still_hidden_by_tag(self):
+        f = self.old_stood_down_alice()
+        self.write_config(name="shared", command=[*self.remote_cmd, "watch", "--json"],
+                          act=self.remote_cmd, hide_tags=["on-shared-box"])
         p = self.ft("rm", "shared:main/heartbeats/alice", ok=False)
         self.assertIn("no lookout", p.stdout + p.stderr)
-        self.assertTrue((self.other / "main").exists())
+        self.assertTrue(f.exists())
 
     def test_without_a_board_ls_refused_says_so(self):
         self.on_other("set", "main/heartbeats/alice", "red", "--tag", "on-shared-box")
@@ -131,8 +162,11 @@ class KeepOne(Remote):
                 "tags": [f"t{i:02d}" for i in range(20, 0, -1)]}}),
             json.dumps({"type": "sync", "ids": ["a/b/c"]}),
         ])
-        self.write_config(name="odd", command=["printf", "%s\\n", feed], hide=["b"], keep_tags=["t01"])
+        # t01..t16 are kept, whatever order the feed gave them in.
+        self.write_config(name="odd", command=["printf", "%s\\n", feed], hide=["b"], keep_tags=["t16"])
         self.assertEqual(self.ids(self.bar()), ["odd:a/b/c"])
+        self.write_config(name="odd", command=["printf", "%s\\n", feed], hide=["b"], keep_tags=["t17"])
+        self.assertEqual(self.ids(self.bar()), [])
 
     def test_without_a_board_a_kept_one_by_name_is_acted_on(self):
         self.on_other("set", "main/heartbeats/alice", "red", "--tag", "staff")
@@ -154,6 +188,8 @@ class KeepOne(Remote):
             if st["sources"][0]["contact"] == "ok":
                 break
             time.sleep(0.2)
+        else:
+            self.fail("the source never came into contact")
         self.assertNotEqual(req("POST", "/api/seen", {"id": "shared:main/heartbeats/bob"})[0], 200)
         self.assertEqual(req("POST", "/api/seen", {"id": "shared:main/heartbeats/alice"})[0], 200)
 

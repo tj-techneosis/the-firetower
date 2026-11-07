@@ -322,7 +322,7 @@ draw what you like.
 
 | | |
 |---|---|
-| `GET /api/state` | every lookout the board shows (less any `hide`), as `ls --json` prints them, and the sources |
+| `GET /api/state` | every lookout the board shows (after `hide`, `keep`, `hide_tags` and `keep_tags`), as `ls --json` prints them, and the sources |
 | `GET /api/feed` | the same, as server-sent events, on every change |
 | `POST /api/seen`, `/api/done`, `/api/rm`, `/api/expect` | `{"id": "district/tower/name"}` (or `source:district/tower/name`, which the board sends to that machine), as JSON |
 | `GET /api/link?id=…` | a local lookout's linked file, as plain text (the last 256 KB) |
@@ -405,8 +405,9 @@ Tags come from the other machine's feed, and a lookout carries at most 16
 (a feed's extra ones are dropped, the last in alphabetical order first).
 Without a board running, `seen`, `done` and `rm` on another machine's
 lookout are held to the same rules: where its tags decide, they ask that
-machine for them first, with `ls` through `act` (so `act` has to allow
-`ls`, and a source with no `act` can't be acted on at all).
+machine for them first, with `ls --all` through `act` (so `act` has to allow
+`ls`, and a source with no `act` can't be acted on at all). One stood down
+over a day ago is still found by its id, with tag rules or without.
 
 A hidden lookout is left out of everything on this board: the list, the bar,
 the counts, the colours, the API and the buttons. The same settings under

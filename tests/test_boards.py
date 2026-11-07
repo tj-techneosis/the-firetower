@@ -249,7 +249,7 @@ class Shown(Remote):
                             self.config.write_text(f"[board]\n{field} = {json.dumps([pat])}\n")
                             named = "[board]"
                         p = self.ft("bar", ok=False)
-                        self.assertIn(f"{named}'s {field} pattern {json.dumps(pat)}", p.stdout)
+                        self.assertIn(f"{named}'s {field} pattern {json.dumps(pat if len(pat) <= 40 else pat[:40] + '…', ensure_ascii=False)}", p.stdout)
                         p = self.ft("board", "--port", str(free_port()), ok=False)
                         self.assertIn("pattern", p.stdout + p.stderr)
 
