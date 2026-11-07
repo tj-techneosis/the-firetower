@@ -283,13 +283,9 @@ func cantMatch(part, what string) string {
 			first = false // a star may take the first character itself
 			continue
 		case '[':
-			// As path.Match reads a class: an optional "^", then up to the
-			// first "]" that isn't the class's first character.
+			// A class runs to its first "]" (path.Match has already
+			// refused one that is empty or starts with "]").
 			j := i + 1
-			if j < len(g) && g[j] == '^' {
-				j++
-			}
-			j++
 			for j < len(g) && g[j] != ']' {
 				j++
 			}

@@ -417,8 +417,9 @@ out of contact, even if every tower of its is hidden: silence never looks
 clear. It's what your board shows, not who may
 read what: `firetower ls` and `watch` still show everything. A pattern that
 could never match a name (a capital, a space, an empty side of the `/`, a
-class that lets in nothing a name holds, or more than 64 characters, each `?`
-or `[ ]` counting as one) is an
+first character no name starts with, a class that lets in nothing a name
+holds, a `/` in a tag pattern, or more than 64 characters, each `?` or `[ ]`
+counting as one and `*` as none) is an
 error like any other in the config: the board and the bar refuse to start
 until it's fixed (a board already running keeps the config it started
 with, and `seen`, `done` and `rm` on another machine's lookout still go

@@ -1,4 +1,4 @@
-"""hide and keep down to one lookout, and by tag (0.5)."""
+"""hide and keep down to one lookout, and by tag (since 0.5.0)."""
 import json
 import time
 import unittest
@@ -55,7 +55,7 @@ class KeepOne(Remote):
 
     def test_bad_tag_patterns_refuse(self):
         for pat in ["a/b", "", "Staff", "-x", "a!b", "[!]", "a" * 65, "[._]*", "[!a-z0-9]x", "[]",
-                    "*" + "a" * 65, "a?" + "b" * 63, "[ab]" * 65, "a[z-a]", "a]*", "x[!a-z0-9._-]", "a^b"]:
+                    "*" + "a" * 65, "a?" + "b" * 63, "[ab]" * 65, "a[z-a]", "a]*", "x[!-._a-z0-9]", "a^b"]:
             for field in ("hide_tags", "keep_tags"):
                 with self.subTest(pat=pat, field=field):
                     self.write_config(name="shared", command=[*self.remote_cmd, "watch", "--json"], **{field: [pat]})
@@ -96,7 +96,7 @@ class KeepOne(Remote):
                          ["shared:main/heartbeats/alice", "shared:site/web/up"])
 
     def test_a_class_starting_with_a_bracket_is_not_a_pattern(self):
-        # path.Match ends a class at its first "]", so "[]o]" doesn't read.
+        # path.Match refuses a class whose first character is "]".
         self.assertIn("is not a pattern", self.refusal(keep_tags=["[]o]n-shared-box"]))
 
     def test_a_pattern_of_64_characters_matches_a_tag_of_64(self):

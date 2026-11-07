@@ -424,8 +424,9 @@ tower of its hidden, since silence must never look clear. The same four settings
 machine's own lookouts, and the buttons refuse those too. It's what a board
 shows, not who may read what: anyone on that machine can still `firetower
 ls` there. A pattern that could never match a name (a capital, a space, an
-empty side of the `/`, a class letting in no name character, more than 64
-characters) or can't be read is a config error, like a bad port:
+empty side of the `/`, a first character no name starts with, a class
+letting in no name character, a `/` in a tag pattern, more than 64
+characters with each `?` or class as one and `*` as none) or can't be read is a config error, like a bad port:
 the boards refuse to start, rather than quietly showing everything. A board
 already running keeps the config it started with, so `seen|done|rm source:…`
 still go through it, and `--stop` (which needs only the port) still stops it.
