@@ -39,9 +39,9 @@ What a lookout can say, and what the board makes of it:
 
 | reported | the board says | means |
 |---|---|---|
-| `green` | **clear** | the check ran and all is fine |
-| `yellow` | **smoke** | worth a look |
-| `red` | **fire** | something's wrong |
+| `green` | **clear** | fine, or an expected state, with the reason in the message |
+| `yellow` | **smoke** | someone is on it |
+| `red` | **fire** | someone has to act now |
 | `done` | **stood down** | the watch is over; it greys out, then leaves after a day. It stays over: a job still booked can't undo it by reporting again, only `firetower expect` books it again |
 | *(past its `next_by`)* | **no word** | the report it promised didn't come |
 | *(expected, nothing yet)* | **waiting** | on the board, no first report yet |
@@ -50,6 +50,15 @@ What a lookout can say, and what the board makes of it:
 
 The files and the CLI keep the plain words (`green`, `stale`), so scripts stay
 readable. The boards use the lookout's.
+
+A lit lookout, smoke or fire, is a call on someone, so it says who:
+a tag such as `--tag owner-ops` (a role or a team, never a person's name).
+A failure is always someone's to act on. A known, expected wait is clear,
+with the reason in the message ("deploys held until Friday"), not smoke. A
+heartbeat that only says a job is alive has nothing to act on, so
+`hide_tags` keeps it off a board people read (see
+[Other machines](#other-machines-1)), while the feed still carries it for
+anything that wants it.
 
 ## How the lookouts work
 

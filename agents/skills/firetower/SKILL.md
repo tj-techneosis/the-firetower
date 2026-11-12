@@ -112,6 +112,14 @@ pick these up: wrap it in `run` and have it exit 0, 1 or 2, or pass
    would read as fire). To watch the same thing again later, `expect` it
    again with its `--next` and `--until`: that starts the end afresh. A
    stood-down lookout greys out and leaves the board after a day.
+7. **The colour is a call on someone.** `red`: someone has to act now.
+   `yellow`: someone is on it. `green`: fine, or an expected state with the
+   reason in the message ("deploys held until Friday"). A lit lookout says
+   who with a tag, `--tag owner-ops` (a role or a team, not a person's
+   name). A failure always has someone to act on it (rule 1); a known,
+   expected wait is `green` with its reason, not `yellow`. A heartbeat
+   that only says a job is alive has nothing to act on; keep it off boards
+   people read with `hide_tags` in the board's config.
 
 ## Booking it
 
