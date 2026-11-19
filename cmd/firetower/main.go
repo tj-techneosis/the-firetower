@@ -41,6 +41,7 @@ Boards:
   firetower bar [--format plain|json|waybar|swiftbar|xbar] [--template T] [--tag T]...
                 [--timeout 8s]
   firetower watch --json [--once]  the feed boards read
+  firetower watch --json --pass-on  what this machine's board shows, passed on
 
   firetower upgrade [--check] | firetower version | firetower help
 

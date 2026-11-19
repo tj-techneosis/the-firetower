@@ -345,13 +345,18 @@ func boardHandler(p *post, pages fs.FS, port int, firstKey string) http.Handler 
 	for _, verb := range []string{"seen", "done", "rm", "expect"} {
 		mux.HandleFunc("POST /api/"+verb, func(w http.ResponseWriter, r *http.Request) {
 			var body struct {
-				ID string `json:"id"`
+				ID   string `json:"id"`
+				From string `json:"from"` // along a chain: who asked, and the board that sent it here
 			}
 			if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&body); err != nil || body.ID == "" {
 				http.Error(w, `want {"id": "district/tower/name"}`, http.StatusBadRequest)
 				return
 			}
-			if err := p.act(verb, body.ID); err != nil {
+			if body.From != "" && !fromRE.MatchString(body.From) {
+				http.Error(w, `"from" is someone@<board id>`, http.StatusBadRequest)
+				return
+			}
+			if err := p.act(verb, body.ID, body.From); err != nil {
 				writeJSONStatus(w, http.StatusConflict, map[string]string{"error": err.Error()})
 				return
 			}

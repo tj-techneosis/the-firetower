@@ -211,7 +211,7 @@ firetower seen NAME             # acknowledge the current smoke or fire
 firetower done NAME ["MESSAGE"]
 firetower rm NAME | --district D [--tower T] | --tag T...   # a lookout, tower, district or tag
 firetower ls [--district D] [--tower T] [--tag T]... [--json]
-firetower watch --json          # the board's feed: a line on every change
+firetower watch --json [--pass-on]  # the board's feed: a line on every change
 firetower gc [--tag T]...       # clears stood-down lookouts older than a day (tagged: now)
 firetower bar [--format plain|json|waybar|swiftbar] [--template T] [--tag T]...
 firetower board [--port N] [--ui DIR] | board --open | --start | --stop | --url
@@ -405,6 +405,28 @@ looking clear, and the board reconnects with a backoff. Both boards read the
 same sources. (One district per machine is then just a config choice, not
 something the tool assumes.)
 
+**A board can pass on what it shows.** `watch --json --pass-on` is the
+running board's picture as a feed: its own lookouts and its sources', after
+its `hide` and `keep`, each marked with the machine it came from (`origin`,
+the name the passing board gives it, never relabelled downstream) and, where
+known, that machine's Firetower id (`origin_id`; `.firetower-id` in the
+state dir, random). A `sources` line carries the board's sources and their
+contact, so a machine out of contact behind it still counts as one. The
+reader asks for it; a plain `watch --json` stays the machine's own raw
+lookouts, unchanged, since readers already filter those themselves. The feed
+reads the running board over loopback and never dials the sources itself:
+with no board up it says so and ends, so every reader shares the board's one
+stream per source and the board's rules are the only ones applied. Loops are
+cut three ways: a lookout goes through two boards at most (a board passes on
+its sources' own lookouts, never what was passed on to it); a reader drops a
+lookout or source carrying its own id, and refuses a feed whose own id is
+its; and the hello carries the path, the id of every machine the feed holds.
+A machine also read directly is shown from its direct source. The id
+`hub:work-mac:d/t/n` is the way back: `seen` and `done` go to hub's board
+(with `--from someone@<board id>`), which holds them to its own rules and
+sends them on to work-mac; every hop writes the action to `acts.log`. `rm`
+and `expect` stay with the lookout's own machine.
+
 `hide` and `keep` (and their `_tags`) choose which of a source's lookouts this board shows, for a
 shared machine that reports for everyone on it: each board keeps its own,
 and the machine never needs to know who is looking. A lookout shows unless
@@ -484,6 +506,6 @@ once and `firetower run` passes it on.
 
 A native GUI app or toolkit (the boards are a page and a line of text),
 history graphs, phone or webhook delivery, editing checks from a board, a
-server that collects other people's sources (each board reaches the ones it lists itself),
+server that collects other people's sources (each board reaches the ones it lists itself, or a board of its own person's that passes them on),
 reports pushed in over the network (a check on the machine reads them and
 reports).

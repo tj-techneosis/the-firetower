@@ -35,6 +35,12 @@ type SourceStatus struct {
 	Since    *time.Time `json:"since,omitempty"`
 	Error    string     `json:"error,omitempty"`
 	CanAct   bool       `json:"can_act"`
+
+	// For a pass-on source (or one passed on).
+	PassOn      bool     `json:"pass_on,omitempty"`      // read with --pass-on: it passes on its board's picture
+	FiretowerID string   `json:"firetower_id,omitempty"` // its machine's Firetower id, where its feed says
+	Via         []string `json:"via,omitempty"`          // passed on: the source it came through
+	Loop        string   `json:"loop,omitempty"`         // what of its feed was left out as this board's own, coming back
 }
 
 // A source goes out of contact when its feed is quiet this long (the feed
@@ -44,6 +50,7 @@ const quietLimit = 2 * time.Minute
 type post struct {
 	cfg     *Config
 	dir     string
+	self    string // this Firetower's id
 	mu      sync.Mutex
 	local   []View
 	sources []*remote
@@ -57,12 +64,19 @@ type remote struct {
 	last      time.Time
 	lostSince *time.Time
 	okSince   time.Time
+
+	// From a pass-on feed (watch --json --pass-on).
+	passOn bool
+	feedID string          // the id its hello gave
+	passed []SourceStatus  // its board's sources, as it passes them on
+	looped map[string]bool // ids left out as this board's own, come back
 }
 
 func newPost(cfg *Config) *post {
 	p := &post{cfg: cfg, dir: stateDir(), subs: map[chan struct{}]bool{}}
+	p.self = boardID(p.dir, true)
 	for _, s := range cfg.Sources {
-		p.sources = append(p.sources, &remote{src: s, views: map[string]View{},
+		p.sources = append(p.sources, &remote{src: s, views: map[string]View{}, looped: map[string]bool{},
 			status: SourceStatus{Name: s.Name, District: s.District, Contact: "connecting", CanAct: len(s.Act) > 0}})
 	}
 	return p
@@ -225,7 +239,14 @@ func (p *post) readFeed(ctx context.Context, r *remote, first bool) (bool, strin
 		if json.Unmarshal(sc.Bytes(), &e) != nil {
 			continue // a login banner, an ssh warning: not the feed's
 		}
-		if p.apply(r, e) {
+		sync, refuse := p.apply(r, e)
+		if refuse != "" {
+			cancel()
+			io.Copy(io.Discard, out)
+			cmd.Wait()
+			return false, refuse
+		}
+		if sync {
 			synced = true
 			if first {
 				cancel()
@@ -250,34 +271,77 @@ func (p *post) readFeed(ctx context.Context, r *remote, first bool) (bool, strin
 	return synced, why
 }
 
-// apply takes one line of a source's feed. It returns true on a sync.
-func (p *post) apply(r *remote, e Event) bool {
+// apply takes one line of a source's feed. It returns true on a sync, and
+// a reason when the whole feed is refused (it is this board's own).
+func (p *post) apply(r *remote, e Event) (bool, string) {
 	p.mu.Lock()
 	r.last = time.Now()
 	sync := false
+	refuse := ""
 	switch e.Type {
+	case "hello":
+		r.passOn, r.feedID = e.PassOn, ""
+		if e.PassOn && boardIDRE.MatchString(e.FiretowerID) {
+			r.feedID = e.FiretowerID
+		}
+		if r.feedID != "" && r.feedID == p.self {
+			refuse = "it is this board's own picture, passed back: a board doesn't read itself"
+		}
+		if !r.passOn {
+			r.passed = nil
+		}
+	case "sources":
+		if !r.passOn || e.Sources == nil {
+			break
+		}
+		r.passed = r.passed[:0]
+		for _, s := range *e.Sources {
+			// Its own sources only (a third hop is never taken), never this
+			// board (a loop), each under a name.
+			if len(s.Via) > 0 || checkName("source", s.Name) != nil {
+				continue
+			}
+			if s.FiretowerID != "" && (!boardIDRE.MatchString(s.FiretowerID) || s.FiretowerID == p.self) {
+				continue
+			}
+			c := SourceStatus{Name: s.Name, Contact: s.Contact, Since: s.Since, Error: cleanText(s.Error, maxText),
+				CanAct: s.CanAct, PassOn: s.PassOn, FiretowerID: s.FiretowerID}
+			if checkName("district", s.District) == nil {
+				c.District = s.District
+			}
+			if c.Contact != "ok" && c.Contact != "connecting" {
+				c.Contact = "lost" // a word this board doesn't know: never taken as fine
+			}
+			r.passed = append(r.passed, c)
+		}
 	case "lookout":
 		if e.Lookout == nil || e.Lookout.ID == "" {
 			break
 		}
 		v := *e.Lookout
-		// The id is made of the names, as every watch feed makes it; one
-		// that says otherwise could be filtered by one name and acted on
-		// by another, so it's dropped.
-		if v.ID != v.District+"/"+v.Tower+"/"+v.Name {
-			break
+		if !r.passOn {
+			// A plain feed's lookouts are its machine's own: what it says
+			// of an origin or a way here is not its to say.
+			v.Origin, v.OriginID, v.Via = "", "", nil
+		}
+		ok, loop := p.feedLookoutOK(v)
+		if loop {
+			r.looped[v.ID] = true
+		} else {
+			delete(r.looped, v.ID)
 		}
 		// A lookout this board doesn't show is dropped as it comes in, so
 		// nothing (the boards, the feed, the counts, act) ever sees it.
 		// Matched on the names the board will show (a name that isn't one
 		// shows as "unnamed") and its cleaned tags, before any folding.
-		if d, t := placeNames(v); r.src.shows(d, t, nameOrUnnamed(v.Name), cleanTags(v.Tags)) {
+		if d, t := placeNames(v); ok && r.src.shows(d, t, nameOrUnnamed(v.Name), cleanTags(v.Tags)) {
 			r.views[v.ID] = v
 		} else {
 			delete(r.views, v.ID)
 		}
 	case "gone":
 		delete(r.views, e.ID)
+		delete(r.looped, e.ID)
 	case "sync":
 		if e.IDs != nil {
 			keep := map[string]bool{}
@@ -287,6 +351,11 @@ func (p *post) apply(r *remote, e Event) bool {
 			for id := range r.views {
 				if !keep[id] {
 					delete(r.views, id)
+				}
+			}
+			for id := range r.looped {
+				if !keep[id] {
+					delete(r.looped, id)
 				}
 			}
 		}
@@ -301,22 +370,90 @@ func (p *post) apply(r *remote, e Event) bool {
 	if e.Type != "hello" {
 		p.notify()
 	}
-	return sync
+	return sync, refuse
+}
+
+// feedLookoutOK: a feed's lookout is one this board takes. The id is made
+// of the names, as every watch feed makes it; one that says otherwise could
+// be filtered by one name and acted on by another, so it's dropped. One
+// passed on is "origin:district/tower/name" (its district is its own,
+// before the board passing it folded it), has come through one board only,
+// and isn't this board's own coming back (loop).
+func (p *post) feedLookoutOK(v View) (ok, loop bool) {
+	if v.OriginID != "" && v.OriginID == p.self {
+		return false, true
+	}
+	if v.Origin == "" {
+		return len(v.Via) == 0 && v.ID == v.District+"/"+v.Tower+"/"+v.Name, false
+	}
+	if len(v.Via) > 0 || (v.OriginID != "" && !boardIDRE.MatchString(v.OriginID)) {
+		return false, false
+	}
+	origin, d, t, n, good := passedID(v.ID)
+	home := v.District
+	if v.HomeDistrict != "" {
+		home = v.HomeDistrict
+	}
+	return good && origin == v.Origin && d == home && t == v.Tower && n == v.Name, false
+}
+
+// shadowed: a lookout or source passed on from origin (id, where known) is
+// one this board also reads directly, from a source other than by: the
+// direct one wins. By id when both are known, else by the name.
+func (p *post) shadowed(by *remote, origin, id string) bool {
+	if id != "" && id == p.self {
+		return true
+	}
+	for _, r := range p.sources {
+		if r == by {
+			continue
+		}
+		if id != "" && r.feedID != "" {
+			if id == r.feedID {
+				return true
+			}
+			continue
+		}
+		if r.src.Name == origin {
+			return true
+		}
+	}
+	return false
 }
 
 // state is the post's picture now. A source's lookouts come back renamed
 // and placed: its name in front of the id, its district over theirs when it
 // folds them into one (their own kept as a tag), and "lost" while it is out
 // of contact. Their text is cleaned again: another machine's feed is
-// another program's output.
+// another program's output. A pass-on source's own sources come after it,
+// marked with the way they came, unless this board reads them itself.
 func (p *post) state() State {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	st := State{At: now(), Lookouts: append([]View{}, p.local...), Sources: []SourceStatus{}}
 	for _, r := range p.sources {
-		st.Sources = append(st.Sources, r.status)
+		ss := r.status
+		ss.PassOn, ss.FiretowerID = r.passOn, r.feedID
+		if len(r.looped) > 0 {
+			ss.Loop = fmt.Sprintf("%d of its lookouts are this board's own, passed back: left out", len(r.looped))
+		}
+		st.Sources = append(st.Sources, ss)
 		for _, v := range r.views {
+			if v.Origin != "" && p.shadowed(r, v.Origin, v.OriginID) {
+				continue
+			}
 			st.Lookouts = append(st.Lookouts, placeRemote(r, v))
+		}
+		if r.status.Contact == "lost" {
+			continue // what it passed on is as old as it is: the machine counts once
+		}
+		for _, s := range r.passed {
+			if p.shadowed(r, s.Name, s.FiretowerID) {
+				continue
+			}
+			s.Via = []string{r.src.Name}
+			s.CanAct = s.CanAct && r.status.CanAct
+			st.Sources = append(st.Sources, s)
 		}
 	}
 	sortViews(st.Lookouts)
@@ -366,10 +503,22 @@ func placeNames(v View) (district, tower string) {
 }
 
 func placeRemote(r *remote, v View) View {
-	v.Origin = r.src.Name
-	v.ID = r.src.Name + ":" + cleanText(v.ID, 200)
+	passed := v.Origin != ""
+	feedLost := v.Contact == "lost"
+	home := ""
+	if passed {
+		// Passed on: its machine keeps the word it goes by there, and the
+		// way back is the id, through the source that passed it on.
+		v.Via = []string{r.src.Name}
+		if checkName("district", v.HomeDistrict) == nil {
+			home = v.HomeDistrict
+		}
+	} else {
+		v.Origin, v.OriginID, v.Via = r.src.Name, r.feedID, nil
+	}
+	v.ID = r.src.Name + ":" + cleanText(v.ID, 400)
 	v.Name = cleanText(v.Name, 64)
-	v.HomeDistrict = ""
+	v.HomeDistrict = home
 	v.Tags = cleanTags(v.Tags)
 	// What a board works out is its own to say: a feed's word for it is
 	// taken only when it's one of the words.
@@ -392,7 +541,9 @@ func placeRemote(r *remote, v View) View {
 	if r.src.District != "" {
 		v.HomeDistrict, v.District = v.District, r.src.District
 	}
-	if r.status.Contact == "lost" {
+	// Out of contact: this source, or (passed on) its machine, as the board
+	// passing it on last knew.
+	if r.status.Contact == "lost" || (passed && feedLost) {
 		v.Contact = "lost"
 	}
 	return v
@@ -420,51 +571,19 @@ func (p *post) notify() {
 }
 
 // act does what a board's buttons do: seen, done or rm, on this machine
-// directly, or on a source's machine through its act command.
-func (p *post) act(verb, id string) error {
+// directly, or on a source's machine through its act command. from is who
+// asked and the board that sent it here ("someone@<id>"), when it came along
+// a chain; "" when asked here.
+func (p *post) act(verb, id, from string) error {
 	if verb != "seen" && verb != "done" && verb != "rm" && verb != "expect" {
 		return fmt.Errorf("no action %q", verb)
 	}
 	origin, orig, remoteID := strings.Cut(id, ":")
 	if !remoteID {
-		parts := strings.Split(id, "/")
-		if len(parts) != 3 {
-			return fmt.Errorf("no lookout %q", id)
+		err := p.actHere(verb, id)
+		if from != "" {
+			logAct(p.dir, verb, id, from, "done here", err)
 		}
-		for _, x := range parts {
-			if err := checkName("name", x); err != nil {
-				return err
-			}
-		}
-		// A lookout this board doesn't show can't be acted on from it,
-		// here as for a source's.
-		if !p.cfg.showLocal() {
-			return fmt.Errorf("no lookout %q", id)
-		}
-		var tags []string
-		if l, err := loadLookout(lookoutPath(p.dir, parts[0], parts[1], parts[2])); err == nil {
-			tags = cleanTags(l.Tags)
-		}
-		if !p.cfg.Board.shows(parts[0], parts[1], parts[2], tags) {
-			return fmt.Errorf("no lookout %q", id)
-		}
-		var err error
-		switch verb {
-		case "seen":
-			_, err = seen(parts[0], parts[1], parts[2])
-		case "done":
-			err = done(parts[0], parts[1], parts[2], "")
-		case "rm":
-			err = rmLookout(parts[0], parts[1], parts[2])
-		case "expect":
-			// Watch again: book again one that's there, as `firetower
-			// expect` does. A button never makes a new lookout.
-			if _, serr := os.Stat(lookoutPath(stateDir(), parts[0], parts[1], parts[2])); serr != nil {
-				return fmt.Errorf("no lookout %q", id)
-			}
-			err = cmdExpect([]string{id})
-		}
-		p.refreshLocal()
 		return err
 	}
 	var r *remote
@@ -476,11 +595,20 @@ func (p *post) act(verb, id string) error {
 	if r == nil {
 		return fmt.Errorf("no source %q", origin)
 	}
+	// One passed on to this board through a source goes back only that
+	// way, and only seen and done do: removing is for its own machine.
+	chained := strings.Contains(orig, ":")
+	if chained && verb != "seen" && verb != "done" {
+		return fmt.Errorf("only seen and done reach a lookout passed on through %s; to %s it, do it on its own machine", origin, verb)
+	}
 	if len(r.src.Act) == 0 {
 		return fmt.Errorf("source %s has no act command, so its lookouts can only be looked at", origin)
 	}
 	p.mu.Lock()
-	_, known := r.views[orig]
+	v, known := r.views[orig]
+	if known && v.Origin != "" && p.shadowed(r, v.Origin, v.OriginID) {
+		known = false // this board reads it directly: that's its way
+	}
 	lost := r.status.Contact == "lost"
 	p.mu.Unlock()
 	if !known {
@@ -489,29 +617,78 @@ func (p *post) act(verb, id string) error {
 	if lost {
 		return fmt.Errorf("%s is out of contact, so it can't be reached; try again once it's back", origin)
 	}
-	return runAct(r.src, verb, orig)
+	// A board that passes on is one that knows --from: tell it who asked.
+	fwd := ""
+	if r.passOn {
+		fwd = forwardFrom(from, p.self)
+	}
+	err := runAct(r.src, verb, orig, fwd)
+	logAct(p.dir, verb, id, from, "sent on to "+origin, err)
+	return err
 }
 
-// runAct runs a source's act command for one lookout (its own id there).
-// The id goes to another machine's command line, usually through ssh and a
-// shell there, so it is held to the name alphabet first and can only ever be
-// one plain argument; and nothing else goes with it (no message).
-func runAct(src Source, verb, orig string) error {
-	if len(src.Act) == 0 {
-		return fmt.Errorf("source %s has no act command, so its lookouts can only be looked at", src.Name)
-	}
-	parts := strings.Split(orig, "/")
+// actHere is act on one of this machine's own lookouts.
+func (p *post) actHere(verb, id string) error {
+	parts := strings.Split(id, "/")
 	if len(parts) != 3 {
-		return fmt.Errorf("no lookout %q", orig)
+		return fmt.Errorf("no lookout %q", id)
 	}
 	for _, x := range parts {
 		if err := checkName("name", x); err != nil {
 			return err
 		}
 	}
+	// A lookout this board doesn't show can't be acted on from it,
+	// here as for a source's.
+	if !p.cfg.showLocal() {
+		return fmt.Errorf("no lookout %q", id)
+	}
+	var tags []string
+	if l, err := loadLookout(lookoutPath(p.dir, parts[0], parts[1], parts[2])); err == nil {
+		tags = cleanTags(l.Tags)
+	}
+	if !p.cfg.Board.shows(parts[0], parts[1], parts[2], tags) {
+		return fmt.Errorf("no lookout %q", id)
+	}
+	var err error
+	switch verb {
+	case "seen":
+		_, err = seen(parts[0], parts[1], parts[2])
+	case "done":
+		err = done(parts[0], parts[1], parts[2], "")
+	case "rm":
+		err = rmLookout(parts[0], parts[1], parts[2])
+	case "expect":
+		// Watch again: book again one that's there, as `firetower
+		// expect` does. A button never makes a new lookout.
+		if _, serr := os.Stat(lookoutPath(stateDir(), parts[0], parts[1], parts[2])); serr != nil {
+			return fmt.Errorf("no lookout %q", id)
+		}
+		err = cmdExpect([]string{id})
+	}
+	p.refreshLocal()
+	return err
+}
+
+// runAct runs a source's act command for one lookout (its own id there, or
+// one passed on to it). The id goes to another machine's command line,
+// usually through ssh and a shell there, so it is held to the name alphabet
+// first and can only ever be one plain argument; nothing else goes with it
+// (no message) but, along a chain, --from: who asked and from which board,
+// in the same alphabet.
+func runAct(src Source, verb, orig, from string) error {
+	if len(src.Act) == 0 {
+		return fmt.Errorf("source %s has no act command, so its lookouts can only be looked at", src.Name)
+	}
+	if err := checkActID(orig); err != nil {
+		return err
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	args := append(append([]string{}, src.Act[1:]...), verb, orig)
+	if from != "" && fromRE.MatchString(from) {
+		args = append(args, "--from", from)
+	}
 	out, err := exec.CommandContext(ctx, src.Act[0], args...).CombinedOutput()
 	if err != nil {
 		msg := strings.TrimSpace(string(out))

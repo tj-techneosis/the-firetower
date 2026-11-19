@@ -39,9 +39,13 @@ type View struct {
 	Broken      bool       `json:"broken,omitempty"`
 
 	// Set by a board for lookouts that came from another machine.
-	Origin       string `json:"origin,omitempty"`        // the source's name
+	Origin       string `json:"origin,omitempty"`        // the source's name (passed on: the name its machine goes by on the board that passed it)
 	HomeDistrict string `json:"home_district,omitempty"` // its own district, when the source folds them into one
 	Contact      string `json:"contact,omitempty"`       // "lost" while the source is out of contact
+
+	// Set for lookouts passed on (watch --json --pass-on).
+	OriginID string   `json:"origin_id,omitempty"` // its machine's Firetower id, where known
+	Via      []string `json:"via,omitempty"`       // the source that passed it on to this board
 }
 
 // Stood-down lookouts stay on the boards, grey, this long, then go.

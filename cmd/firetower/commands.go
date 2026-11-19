@@ -445,7 +445,7 @@ func cmdExpect(args []string) error {
 
 func cmdSeen(args []string) error {
 	const u = "seen NAME [--district D] [--tower T]"
-	f, err := parseFlags(args, map[string]bool{"district": true, "tower": true}, false)
+	f, err := parseFlags(args, map[string]bool{"district": true, "tower": true, "from": true}, false)
 	if err != nil {
 		return bad(u, err)
 	}
@@ -456,11 +456,22 @@ func cmdSeen(args []string) error {
 		if err := noPlaceFlags(f); err != nil {
 			return bad(u, err)
 		}
-		return actElsewhere("seen", f.pos[0])
+		from, err := routedFrom(f)
+		if err != nil {
+			return bad(u, err)
+		}
+		return actElsewhere("seen", f.pos[0], from)
 	}
 	d, t, n, err := where(f.pos[0], f, true)
 	if err != nil {
 		return err
+	}
+	from, err := routedFrom(f)
+	if err != nil {
+		return bad(u, err)
+	}
+	if from != "" {
+		return routedHere("seen", d, t, n, from, func() error { _, err := seen(d, t, n); return err })
 	}
 	already, err := seen(d, t, n)
 	if already != nil && atTerminal() {
@@ -470,6 +481,42 @@ func cmdSeen(args []string) error {
 		}
 		fmt.Fprintf(os.Stderr, "firetower: %s/%s/%s was already seen %s, and keeps that time\n", d, t, n, when)
 	}
+	return err
+}
+
+// routedFrom is --from, which only an action sent along a chain of boards
+// carries: who asked, and the board that sent it here.
+func routedFrom(f flags) (string, error) {
+	if !f.has("from") {
+		return "", nil
+	}
+	from := f.get("from")
+	if !fromRE.MatchString(from) {
+		return "", fmt.Errorf("--from is someone@<board id>, as a board sends it")
+	}
+	return from, nil
+}
+
+// routedHere is seen or done on one of this machine's lookouts, sent by a
+// board that this one passes on to: held to what this machine's board shows
+// (a lookout it hides was never passed on, so it can't be asked for), and
+// written down.
+func routedHere(verb, d, t, n, from string, do func() error) error {
+	id := d + "/" + t + "/" + n
+	cfg, cerr := loadConfig()
+	err := cerr
+	if err == nil {
+		var tags []string
+		if l, lerr := loadLookout(lookoutPath(stateDir(), d, t, n)); lerr == nil {
+			tags = cleanTags(l.Tags)
+		}
+		if !cfg.showLocal() || !cfg.Board.shows(d, t, n, tags) {
+			err = fmt.Errorf("no lookout %q", id)
+		} else {
+			err = do()
+		}
+	}
+	logAct(stateDir(), verb, id, from, "done here", err)
 	return err
 }
 
@@ -510,7 +557,7 @@ func seen(d, t, n string) (*time.Time, error) {
 
 func cmdDone(args []string) error {
 	const u = `done NAME ["MESSAGE"] [--district D] [--tower T]`
-	f, err := parseFlags(args, map[string]bool{"district": true, "tower": true}, true)
+	f, err := parseFlags(args, map[string]bool{"district": true, "tower": true, "from": true}, true)
 	if err != nil {
 		return bad(u, err)
 	}
@@ -533,11 +580,25 @@ func cmdDone(args []string) error {
 			// It would cross a shell on the other machine: no free text goes.
 			return fmt.Errorf("a message can't go to another machine's lookout; without one, done keeps what the watch last said")
 		}
-		return actElsewhere("done", f.pos[0])
+		from, err := routedFrom(f)
+		if err != nil {
+			return bad(u, err)
+		}
+		return actElsewhere("done", f.pos[0], from)
 	}
 	d, t, n, err := where(f.pos[0], f, true)
 	if err != nil {
 		return err
+	}
+	from, err := routedFrom(f)
+	if err != nil {
+		return bad(u, err)
+	}
+	if from != "" {
+		if msg != "" {
+			return fmt.Errorf("a message can't come along a chain")
+		}
+		return routedHere("done", d, t, n, from, func() error { return done(d, t, n, "") })
 	}
 	return done(d, t, n, msg)
 }
@@ -598,7 +659,7 @@ func cmdRm(args []string) error {
 			if err := noPlaceFlags(f); err != nil {
 				return bad(u, err)
 			}
-			return actElsewhere("rm", f.pos[0])
+			return actElsewhere("rm", f.pos[0], "")
 		}
 		d, t, n, err := where(f.pos[0], f, true)
 		if err != nil {

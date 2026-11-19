@@ -238,6 +238,7 @@ firetower board --open | --start | --stop | --url [--once]
 firetower bar [--format plain|json|waybar|swiftbar|xbar] [--template T] [--tag T]...
               [--timeout 8s]
 firetower watch --json [--once]  the feed boards read
+firetower watch --json --pass-on  what this machine's board shows, passed on
 
 firetower upgrade [--check] | firetower version | firetower help
 ```
@@ -451,6 +452,47 @@ there's no such lookout.
 
 A source that fails, or goes quiet for two minutes, is **out of contact**:
 its lookouts stay, marked, and the board keeps trying. It never looks clear.
+
+### One tower for a group of machines
+
+A board that reads other machines can pass on what it shows, so another
+board reads one machine for the whole group. Ask for it on the reading side,
+with `--pass-on`:
+
+```toml
+[[source]]
+name = "hub"
+command = ["ssh", "-o", "BatchMode=yes", "hub", ".local/bin/firetower", "watch", "--json", "--pass-on"]
+act = ["ssh", "-o", "BatchMode=yes", "hub", ".local/bin/firetower"]
+```
+
+The feed is hub's board as it stands: hub's own lookouts and its sources',
+after hub's `hide` and `keep`, so the rules live once, on hub, and a
+lookout hub hides never leaves it. Each keeps the name its machine goes by
+on hub (`on work-mac`, passed on by hub) and comes in as
+`hub:work-mac:district/tower/name`. A machine hub has lost shows out of
+contact here too. Without `--pass-on`, `watch --json` is what it always was:
+the machine's own lookouts, raw, whatever its board hides.
+
+- It needs hub's board running (`firetower board --start` there, or as a
+  service): the feed is that board's picture, read over loopback, so every
+  reader shares the board's one connection to each machine. With no board up
+  it says so, and hub shows out of contact here.
+- A lookout comes through two boards at most: its own machine's, then the
+  one passing it on. A board passes on its sources' own lookouts, never
+  what was passed on to it.
+- No loops: each Firetower has an id, and a board leaves out its own
+  lookouts, or itself as a source, when they come back to it. For that,
+  the board in the middle reads its sources with `--pass-on` too (a plain
+  feed carries no id). A feed that is this board's own is refused.
+- A machine this board also reads directly is shown once, from its own
+  source: the direct one wins (by id where both are known, else by name).
+- `seen` and `done` go back the way the lookout came: here to hub's board,
+  hub's board to work-mac. Each board on the way holds them to its own rules
+  (a lookout it doesn't show can't be reached), and writes each one down in
+  `acts.log` in its state dir: when, what, who asked and from which board.
+  `rm` and "watch again" don't travel a chain: do them on the lookout's own
+  machine.
 
 ## Checking in
 

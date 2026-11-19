@@ -229,7 +229,7 @@ function row(v, now) {
   }
   if (v.origin) {
     const c = el("span", "chip", `on ${v.origin}`);
-    c.title = `reported on the machine ${v.origin}`;
+    c.title = v.via ? `reported on the machine ${v.origin}, passed on by ${v.via.join(", ")}` : `reported on the machine ${v.origin}`;
     line.append(c);
   }
   main.append(line, meta(v, now));
@@ -248,8 +248,9 @@ function row(v, now) {
   if (canAct && v.contact !== "lost") {
     if ((v.state === "yellow" || v.state === "red") && !v.seen && !v.broken) acts.append(button("Seen", "seen", v));
     if (v.state !== "done" && !v.broken) acts.append(button("Stand down", "done", v));
-    if (v.state === "done") acts.append(button("Watch again", "expect", v));
-    acts.append(button("Remove", "rm", v, true));
+    // Passed on through another board: only seen and stand down go back.
+    if (v.state === "done" && !v.via) acts.append(button("Watch again", "expect", v));
+    if (!v.via) acts.append(button("Remove", "rm", v, true));
   }
   if (acts.childElementCount) {
     // On a touch screen (or a narrow window) a row's buttons hide behind

@@ -252,8 +252,12 @@ func askBoard(cfg *Config) (*State, error) {
 // tellBoard does what a board's button does (seen, done, rm, expect) through
 // the running board, which routes another machine's lookout to it. errNoBoard
 // when none is up; any other error is the board's answer.
-func tellBoard(cfg *Config, verb, id string) error {
-	body, _ := json.Marshal(map[string]string{"id": id})
+func tellBoard(cfg *Config, verb, id, from string) error {
+	req := map[string]string{"id": id}
+	if from != "" {
+		req["from"] = from
+	}
+	body, _ := json.Marshal(req)
 	resp, err := boardRequest(cfg, "POST", "/api/"+verb, body)
 	if err != nil {
 		return err
@@ -318,18 +322,23 @@ func sourceTags(src Source, district, tower, name string) (tags []string, found 
 // which knows the source and routes it, or else straight through the
 // source's act command from the config, as the board would: held to the
 // same hide and keep, asking the machine for the lookout's tags when they
-// decide.
-func actElsewhere(verb, id string) error {
+// decide. One passed on through a source ("source:origin:district/tower/
+// name") goes only through the board, which knows the way it came. from is
+// --from: who asked along a chain, and the board that sent it here.
+func actElsewhere(verb, id, from string) error {
 	// A broken config still names the board's port (a mistyped pattern
 	// mustn't stop acting through a board that has a good one); only the
 	// way round the board needs the sources.
 	cfg, cerr := loadConfig()
 	origin, orig, _ := strings.Cut(id, ":")
-	if err := tellBoard(cfg, verb, id); !errors.Is(err, errNoBoard) {
+	if err := tellBoard(cfg, verb, id, from); !errors.Is(err, errNoBoard) {
 		return err
 	}
 	if cerr != nil {
 		return cerr
+	}
+	if strings.Contains(orig, ":") {
+		return fmt.Errorf("%s was passed on through %s, and goes back the way it came, through this machine's board: none is running here (firetower board --start)", id, origin)
 	}
 	for _, s := range cfg.Sources {
 		if s.Name == origin {
@@ -355,7 +364,12 @@ func actElsewhere(verb, id string) error {
 			if !shown {
 				return fmt.Errorf("no lookout %q", id) // hidden here, as on the board
 			}
-			return runAct(s, verb, orig)
+			// Without a board this machine doesn't know whether the other
+			// one takes --from, so nothing goes with the id; it's written
+			// down here.
+			err := runAct(s, verb, orig, "")
+			logAct(stateDir(), verb, id, from, "sent on to "+origin+" (no board up here)", err)
+			return err
 		}
 	}
 	return fmt.Errorf("no source %q in %s", origin, cfg.path)
